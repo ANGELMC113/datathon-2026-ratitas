@@ -1,0 +1,2 @@
+time,version,deployed,reason,minutes,holdout_buys,cand_auc,cur_auc,cand_logloss,cur_logloss
+2026-11-14T20:28:41,v3-auto-142025,False,"(simulación) mejor: logloss 0.00901 vs 0.00917, AUC 0.8051 vs 0.8074 (v2-lgbm)",2.8,34,0.8050706308085291,0.8074053651334263,0.0090104034223965,0.009165784171835136

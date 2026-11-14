@@ -1,0 +1,43 @@
+[20:25:52] actualizando la popularidad diaria con shop.events (para las impresiones del stream)
+[20:25:56] conteos diarios view: 310212 filas
+[20:25:57] conteos diarios add_to_cart: 178150 filas
+[20:26:00] conteos diarios purchase: 139374 filas
+[20:27:04] filas: entrenamiento 870870 (4691 compras), validación 904740 (4911 compras) en 61 s
+[100]	valid_0's binary_logloss: 0.00849834
+[200]	valid_0's binary_logloss: 0.00848785
+[20:27:50] validación (filas mostradas) modelo: {'auc': 0.8999833852479995, 'logloss': 0.008486578489460023, 'mrr_in_shown_model': 0.6551327114705245, 'mrr_in_shown_old_order': 0.5125773549079895}
+[20:27:50] validación (filas mostradas) heurística: {'auc': 0.8384018390631165, 'logloss': 0.2925567577895472, 'mrr_in_shown_model': 0.54127679036048, 'mrr_in_shown_old_order': 0.5125773549079895}
+         feature         gain  gain_pct
+    car_buy_lift 28216.471623 16.236510
+       covis_b2b 27837.517665 16.018450
+     pop_buy_all 11429.748321  6.576982
+       covis_buy 10055.440319  5.786169
+       in_recent  9747.637774  5.609051
+         conv_7d  8527.240418  4.906802
+        position  8389.873609  4.827757
+     content_sim  7803.781388  4.490504
+     pop_view_7d  6023.194918  3.465907
+  car_click_lift  5676.505904  3.266413
+     recent_rank  5495.480811  3.162246
+       cat_share  4368.529308  2.513768
+        age_days  4279.495337  2.462536
+     price_ratio  4240.048572  2.439837
+content_sim_last  3569.220108  2.053824
+[20:27:50] evaluación de la lista completa (candidatos + orden) en días 51-60 ...
+                       todas     cold
+baseline              0.5167   0.5938
+heuristica            0.5240   0.5938
+modelo                0.7707   0.5312
+recall@50             0.6933   0.8750
+recall@100            0.9487   0.9062
+recall@200            0.9920   0.9375
+n_impresiones      1500.0000  32.0000
+heuristica MRR@10     0.2900   0.2339
+modelo MRR@10         0.4727   0.2611
+[20:28:02] impresiones propias con feedback: 6263 (con compra: 85)
+[20:28:03] feedback: 3662 impresiones para entrenar, 2601 reservadas (últimos 15 min, 34 compras) para comparar
+[20:28:05] modelo de validación sobre el feedback propio: {'auc': 0.8540894221452973, 'logloss': 0.009309693000365151, 'mrr_in_shown_model': 0.5987939620292562, 'mrr_in_shown_old_order': 0.6034002304077148}
+[20:28:40] reservado · nuevo v3-auto-142025: {'auc': 0.8050706308085291, 'logloss': 0.0090104034223965, 'mrr_in_shown_model': 0.5455765639589168, 'mrr_in_shown_old_order': 0.5727007985115051}
+[20:28:40] reservado · desplegado v2-lgbm: {'auc': 0.8074053651334263, 'logloss': 0.009165784171835136, 'mrr_in_shown_model': 0.5264589169000934, 'mrr_in_shown_old_order': 0.5727007985115051}
+[20:28:40] modelo guardado en /home/shiqi-liang/Documents/DATATHON 26/datathon-2026-ratitas/starter/artifacts/candidate (copia en /home/shiqi-liang/Documents/DATATHON 26/datathon-2026-ratitas/starter/artifacts/models/v3-auto-142025)
+[20:28:40] listo: v3-auto-142025. Añade una línea a CHANGELOG.md con estas métricas.
