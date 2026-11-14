@@ -100,16 +100,27 @@ def push(answers: list[Record]) -> None:
     print(f"answered {len(answers)}")
 
 
+BEST_REFRESH = 5*60
+STOCK_REFRESH = 5*60 
+
+
 def main() -> None:
     best: list[str] = []
     seen = set[str]()
     unavailable: set[str] = set()
     stock_checked = 0.0
+    best_checked = 0.0
     while True:
         try:
-            if not best:
-                best = best_sellers()
-            if time.time() - stock_checked >= 1:  # stock changes every few minutes: once a second is plenty
+            if not best or time.time() - best_checked >= BEST_REFRESH:
+                best_checked = time.time()
+                try:
+                    best = best_sellers()
+                except Exception as e:
+                    if not best:
+                        raise  # sin ranking no se puede responder: lo gestiona el except de fuera
+                    print(f"best sellers refresh failed, keeping the previous ranking: {e}")
+            if time.time() - stock_checked >= STOCK_REFRESH:
                 stock_checked = time.time()
                 try:
                     unavailable = out_of_stock()
@@ -120,9 +131,31 @@ def main() -> None:
                 push(answers)
         except Exception as e:  # keep running: shoppers keep arriving while you sleep
             print(f"error: {e}")
-            time.sleep(2)
+            time.sleep(1)
         time.sleep(0.3)
-
 
 if __name__ == "__main__":
     main()
+'''
+En el main guarda en best el resultado de Best_sellers, mira si la lista best es vacía, si lo es le pone todos los productos comprados alguna vez en orden de más comprado a menos 
+y no se  vuelva a actualizar. Siempre se va a quedar con la lista con el orden de la primera vez
+que se ejecuta porque no vuelve a ser vacía por lo que no se actualiza. --> NEEDS TO CHANGE TO BE DYNAMIC
+
+SALES cuenta las compras de cada producto en history_events.
+NEW_REQUESTS trae las 50 peticiones más recientes. A 3 por segundo, eso son unos 16 s de margen.
+OUT_OF_STOCK busca los productos cuyo último cambio de stock es out_of_stock, gracias al argMax por fecha.
+
+La función recomend recorre best en orden, salta los agotados y se queda con los 10 primeros. No usa recent_views, así que todo el mundo recibe la misma lista. Es la función que hay que 
+sustituir, y la más importante de todo el archivo.
+
+Seguidamente mira el cambio de stock cada segundo, que en teoría cambia cada ciertos minutos, pero se hace para asegurarse que nunca se quede sin 
+los out of stock. Ésto comporta problema de overhead creo. Si no se ha podido obtener lista de stock se printea  el mensaje de excepción, hay que fijarse
+que si da error, la lista de productos unavailable será la anterior a la del error.
+
+Después de obtener el la lista de productos out of stock se pasa a envolver la info con la predicción. Se hace la predicción de los requests que no se 
+han leído. Ésto significa que los marca como leídos pero no han sido contestados en el momento de leere. Si push falla (no debería, pero es posible por el campo timeout, hacer que sea un parametro de la func)
+esas peticiones se quedan como vistas y nunca se responden. 
+
+Con el push se publica la predicción al evaluador. Cuando acaba se queda quieto por 0.3 que es el polling rate para no saturar las peticiones a la API.
+El error del try del bucle espera 2 segundos para no sobresaturar a la red en caso de fallo, sin embargo 2 segundos es demasiado para el límite de 3 seg.
+'''
