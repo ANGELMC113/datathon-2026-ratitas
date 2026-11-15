@@ -1,0 +1,45 @@
+[02:37:14] actualizando la popularidad diaria con shop.events (para las impresiones del stream)
+[02:37:16] conteos diarios view: 315712 filas
+[02:37:18] conteos diarios add_to_cart: 182041 filas
+[02:37:21] conteos diarios purchase: 142715 filas
+[02:37:32] compras para marcar recompras: 263896
+[02:37:44] recompras quitadas de entrenamiento: 1510 de 4691 compras (32.2 %; el simulador evaluado casi no las tiene)
+[02:37:44] recompras quitadas de validación: 1565 de 4911 compras (31.9 %; el simulador evaluado casi no las tiene)
+[02:38:57] filas: entrenamiento 855970 (3181 compras), validación 889218 (3346 compras) en 74 s
+[02:38:57] uso los hiperparámetros ajustados de /home/shiqi-liang/Documents/DATATHON 26/datathon-2026-ratitas/starter/artifacts/offline/best_params.json: {'num_leaves': 63, 'min_data_in_leaf': 200, 'learning_rate': 0.05, 'feature_fraction': 1.0, 'lambda_l2': 5.0}
+[100]	valid_0's binary_logloss: 0.0064339
+[200]	valid_0's binary_logloss: 0.00644874
+[02:39:47] validación (filas mostradas) modelo: {'auc': 0.885726142194966, 'logloss': 0.006429603978553664, 'mrr_in_shown_model': 0.6275518505868177, 'mrr_in_shown_old_order': 0.4842812716960907}
+[02:39:47] validación (filas mostradas) heurística: {'auc': 0.8190856886406812, 'logloss': 0.28926179732329893, 'mrr_in_shown_model': 0.5210044687330999, 'mrr_in_shown_old_order': 0.4842812716960907}
+         feature         gain  gain_pct
+      trans_prod 25175.986200 19.678323
+       covis_b2b 14164.871835 11.071698
+    car_buy_lift  8133.136541  6.357109
+     recent_rank  7606.711687  5.945639
+     content_sim  7017.297034  5.484935
+        position  5901.111317  4.612490
+         conv_7d  5482.197288  4.285054
+       covis_buy  5407.674406  4.226804
+       trans_sub  5051.287930  3.948242
+  car_click_lift  4243.072150  3.316515
+     price_ratio  3702.874172  2.894280
+content_sim_last  3477.810972  2.718364
+        age_days  2881.956157  2.252625
+      trend_view  2457.649785  1.920974
+        n_recent  2302.012326  1.799323
+[02:39:47] evaluación de la lista completa (candidatos + orden) en días 51-60 ...
+                       todas      cold
+baseline              0.5135    0.5478
+heuristica            0.5168    0.5478
+modelo                0.7461    0.5391
+recall@50             0.8902    0.8174
+recall@100            0.9593    0.9043
+recall@200            0.9890    0.9478
+n_impresiones      4911.0000  115.0000
+heuristica MRR@10     0.2873    0.2058
+modelo MRR@10         0.4134    0.2201
+[02:40:19] impresiones propias con feedback: 64023 (con compra: 820)
+[02:40:50] feedback con vida media de 2.0 h: peso medio 0.35
+[02:40:59] modelo de validación sobre el feedback propio: {'auc': 0.7999684400116223, 'logloss': 0.008897401299762324, 'mrr_in_shown_model': 0.5806833139759969, 'mrr_in_shown_old_order': 0.6101175546646118}
+[02:41:43] modelo guardado en artifacts/model_f (copia en artifacts/models/v5-norebuy)
+[02:41:43] listo: v5-norebuy. Añade una línea a CHANGELOG.md con estas métricas.

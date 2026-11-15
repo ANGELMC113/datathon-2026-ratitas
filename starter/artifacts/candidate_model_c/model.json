@@ -1,0 +1,106 @@
+{
+  "metrics": {
+    "valid_rows": {
+      "auc": 0.9016879840334637,
+      "logloss": 0.008442336424550074,
+      "mrr_in_shown_model": 0.6551379636901934,
+      "mrr_in_shown_old_order": 0.5125773549079895
+    },
+    "best_iter": 134,
+    "params": {
+      "num_leaves": 63,
+      "min_data_in_leaf": 200,
+      "learning_rate": 0.05,
+      "feature_fraction": 1.0,
+      "lambda_l2": 5.0
+    },
+    "policies": {
+      "todas": {
+        "baseline": 0.52333,
+        "heuristica": 0.53067,
+        "modelo": 0.77333,
+        "recall@50": 0.898,
+        "recall@100": 0.96133,
+        "recall@200": 0.99,
+        "n_impresiones": 1500.0,
+        "heuristica MRR@10": 0.29925,
+        "modelo MRR@10": 0.48329
+      },
+      "cold": {
+        "baseline": 0.58065,
+        "heuristica": 0.58065,
+        "modelo": 0.54839,
+        "recall@50": 0.83871,
+        "recall@100": 0.90323,
+        "recall@200": 0.93548,
+        "n_impresiones": 31.0,
+        "heuristica MRR@10": 0.23341,
+        "modelo MRR@10": 0.18221
+      }
+    },
+    "feedback_rows": {
+      "auc": 0.8304476052709163,
+      "logloss": 0.008798160639300674,
+      "mrr_in_shown_model": 0.5963430282292557,
+      "mrr_in_shown_old_order": 0.6132220029830933
+    },
+    "holdout": {
+      "n_rows": 107370,
+      "n_buys": 144,
+      "candidate": {
+        "auc": 0.8360573630048267,
+        "logloss": 0.009044478910628312,
+        "mrr_in_shown_model": 0.6336833112874779,
+        "mrr_in_shown_old_order": 0.6444169282913208
+      },
+      "current": {
+        "auc": 0.8476171888762468,
+        "logloss": 0.00908217354316281,
+        "mrr_in_shown_model": 0.6581101190476191,
+        "mrr_in_shown_old_order": 0.6444169282913208
+      },
+      "current_version": "v3-trans-fb"
+    }
+  },
+  "rounds": 147,
+  "kind": "lightgbm",
+  "version": "v4-fb-150029",
+  "file": "model.txt",
+  "features": [
+    "position",
+    "hour",
+    "device",
+    "page",
+    "n_recent",
+    "in_recent",
+    "recent_rank",
+    "recent_count",
+    "covis_view",
+    "covis_buy",
+    "covis_b2b",
+    "content_knn",
+    "content_sim",
+    "content_sim_last",
+    "cat_share",
+    "sub_share",
+    "brand_share",
+    "same_sub_last",
+    "log_price",
+    "price_ratio",
+    "age_days",
+    "pop_view_1d",
+    "pop_cart_1d",
+    "pop_buy_1d",
+    "pop_view_7d",
+    "pop_buy_7d",
+    "pop_buy_all",
+    "conv_7d",
+    "trend_view",
+    "car_shown_log",
+    "car_click_lift",
+    "car_buy_lift",
+    "trans_prod",
+    "trans_sub"
+  ],
+  "trained_at": "2026-11-15 00:33:40"
+}

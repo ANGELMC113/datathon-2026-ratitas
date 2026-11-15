@@ -1,0 +1,62 @@
+[21:28:25] histórico 2026-09-15 07:00:01.456000 -> 2026-11-14 06:59:59.207000; entrenar con [2026-10-25 00:00:00, 2026-11-04 00:00:00), validar con el resto
+[21:28:28] catálogo 5000 productos; embeddings (5000, 64)
+[21:28:30] conteos diarios view: 304912 filas
+[21:28:31] conteos diarios add_to_cart: 173275 filas
+[21:28:32] conteos diarios purchase: 134870 filas
+[21:28:36] recorridos vista -> compra del carrusel: 28053
+[21:28:36] artefactos A (histórico < 2026-10-25 00:00:00)
+[21:28:47]   co-visitación view: 200000 pares (11 s)
+[21:28:50]   co-visitación buy: 199735 pares (3 s)
+[21:28:53]   co-visitación b2b: 174764 pares (3 s)
+[21:28:54]   estadísticas del carrusel listas
+[21:28:56]   transiciones vista -> compra: 19173 pares de producto, 1667 de subcategoría
+[21:28:56] artefactos B (histórico < 2026-11-04 00:00:00)
+[21:29:04]   co-visitación view: 200000 pares (8 s)
+[21:29:09]   co-visitación buy: 199884 pares (5 s)
+[21:29:11]   co-visitación b2b: 180834 pares (2 s)
+[21:29:12]   estadísticas del carrusel listas
+[21:29:14]   transiciones vista -> compra: 22459 pares de producto, 1816 de subcategoría
+[21:29:14] artefactos LIVE (histórico < 2026-11-14 06:59:59.208000)
+[21:29:23]   co-visitación view: 200000 pares (9 s)
+[21:29:26]   co-visitación buy: 199948 pares (3 s)
+[21:29:29]   co-visitación b2b: 184357 pares (3 s)
+[21:29:29]   estadísticas del carrusel listas
+[21:29:31]   transiciones vista -> compra: 25624 pares de producto, 1950 de subcategoría
+[21:29:31] artefactos del servicio en /home/shiqi-liang/Documents/DATATHON 26/datathon-2026-ratitas/starter/artifacts/live.pkl
+[21:29:40] impresiones [1792886400000, 1793750400000): 87087 (con compra: 4691)
+[21:29:48] impresiones [1793750400000, 1794639599208): 90474 (con compra: 4911)
+[21:31:13] filas: entrenamiento 870870 (4691 compras), validación 904740 (4911 compras) en 82 s
+[100]	valid_0's binary_logloss: 0.00848926
+[200]	valid_0's binary_logloss: 0.00847221
+[300]	valid_0's binary_logloss: 0.00846802
+[21:31:54] validación (filas mostradas) modelo: {'auc': 0.9010524036947736, 'logloss': 0.00846276335207283, 'mrr_in_shown_model': 0.6536965122029263, 'mrr_in_shown_old_order': 0.5125773549079895}
+[21:31:54] validación (filas mostradas) heurística: {'auc': 0.8383626537611437, 'logloss': 0.2925577037914556, 'mrr_in_shown_model': 0.541237358311274, 'mrr_in_shown_old_order': 0.5125773549079895}
+         feature         gain  gain_pct
+    car_buy_lift 26274.485786 13.264429
+      trans_prod 23722.953278 11.976311
+         conv_7d 19222.311326  9.704204
+       covis_b2b 14711.391686  7.426909
+     content_sim 11610.507680  5.861456
+  car_click_lift 10692.716275  5.398118
+        position  9026.284822  4.556836
+       in_recent  8922.241768  4.504310
+       trans_sub  8451.413018  4.266617
+       covis_buy  7871.846881  3.974028
+     price_ratio  5514.028706  2.783706
+     recent_rank  4874.699914  2.460947
+content_sim_last  4289.160457  2.165343
+        n_recent  3885.673457  1.961646
+      trend_view  3367.458515  1.700030
+[21:31:54] evaluación de la lista completa (candidatos + orden) en días 51-60 ...
+                       todas      cold
+baseline              0.5135    0.5478
+heuristica            0.5168    0.5478
+modelo                0.7668    0.5739
+recall@50             0.8902    0.8174
+recall@100            0.9593    0.9043
+recall@200            0.9890    0.9478
+n_impresiones      4911.0000  115.0000
+heuristica MRR@10     0.2873    0.2058
+modelo MRR@10         0.4475    0.2369
+[21:32:51] modelo guardado en artifacts/model_b (copia en artifacts/models/v3-trans)
+[21:32:51] listo: v3-trans. Añade una línea a CHANGELOG.md con estas métricas.

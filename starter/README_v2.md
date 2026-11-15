@@ -19,9 +19,12 @@ reco/                 paquete compartido (mismo código offline y en vivo)
   recommender.py      une las piezas + funciones de CONTRACTS.md
   live.py             estado en vivo refrescado en segundo plano (rol A)
   offline.py          descargas, filas de entrenamiento y evaluación
+  serving.py          piezas del servicio: estadísticas, registro, inserción con respaldo, variantes A/B
 serve_v2.py           bucle en vivo
 train.py              artefactos + entrenamiento + validación temporal
 monitor.py            resumen del feedback y semáforo (para la ronda final a oscuras)
+ab_report.py          conversión oficial de cada versión en ventanas consecutivas (API del leaderboard)
+auto_retrain.py       reentrenamiento periódico con puerta de calidad
 check_sql.py          prueba cada consulta contra RawTree
 run_serve.sh          reinicio automático si el proceso muere
 tests/                pruebas sin red (mundo sintético + cliente falso)
@@ -41,6 +44,31 @@ python serve_v2.py --dry-run --max-seconds 120   # 3. prueba en vivo SIN inserta
 python monitor.py --minutes 15 --watch 60  # 5. vigilar
 python train.py --with-feedback --version v3-feedback   # 6. reentrenar con lo aprendido del stream
 ```
+
+### Ajuste de hiperparámetros
+
+```bash
+python train.py --tune 12 --version v4-tuned --model-dir artifacts/model_d
+```
+
+Prueba 12 combinaciones (la primera es la de siempre) y elige la de menor logloss en validación. La guarda en `artifacts/offline/best_params.json` y los entrenamientos siguientes (también `auto_retrain.py`) la usan. Tabla completa en `artifacts/offline/tuning.csv`. Como siempre, solo se queda si gana en el A/B.
+
+### Leer el A/B con la métrica oficial
+
+```bash
+python ab_report.py --length 15 --windows 4
+```
+
+Conversión esperada de cada versión en 4 ventanas consecutivas de 15 min y cuántas veces fue la mejor. Una variante gana si va por delante en casi todas las ventanas. En la ronda final el leaderboard está oculto: solo sirve en la práctica.
+
+### Test A/B en vivo
+
+```bash
+python train.py --build --version v3-trans --model-dir artifacts/model_b   # candidato, sin tocar producción
+./run_serve.sh --ab-model-dir artifacts/model_b --ab-fraction 0.5
+```
+
+La mitad de las peticiones (por hash del `request_id`, siempre la misma mitad) va al modelo B con su propio `model_version`. El leaderboard (vista Beta, desplegando el equipo) muestra la conversión de cada versión en la misma ventana. Para promover al ganador: `cp artifacts/model_b/* artifacts/model/` (recarga en caliente).
 
 ### Reentrenamiento automático
 

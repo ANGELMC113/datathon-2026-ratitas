@@ -23,6 +23,10 @@ from .features import F, FEATURE_NAMES
 class Scorer:
     kind = "base"
     version = "v0"
+    cols: np.ndarray | None = None      # columnas de la matriz que usa el modelo (None = todas)
+
+    def _select(self, X: np.ndarray) -> np.ndarray:
+        return X if self.cols is None else X[:, self.cols]
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         raise NotImplementedError
@@ -60,7 +64,7 @@ class LightGBMScorer(Scorer):
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         # 200 filas: un hilo es más rápido que repartir el trabajo
-        return self.booster.predict(X, num_threads=1)
+        return self.booster.predict(self._select(X), num_threads=1)
 
 
 class SklearnScorer(Scorer):
@@ -72,7 +76,7 @@ class SklearnScorer(Scorer):
         self.version = version
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        return self.model.predict_proba(X)[:, 1]
+        return self.model.predict_proba(self._select(X))[:, 1]
 
 
 def load_scorer(model_dir: Path) -> Scorer:
@@ -81,17 +85,24 @@ def load_scorer(model_dir: Path) -> Scorer:
     if not meta_path.exists():
         return HeuristicScorer()
     meta = json.loads(meta_path.read_text())
-    if tuple(meta.get("features", ())) != FEATURE_NAMES:
-        # columnas distintas = predicciones basura; mejor la heurística y avisar
-        print(f"[model] {meta_path}: las features no coinciden con FEATURE_NAMES; uso la heurística")
+    features = list(meta.get("features", ()))
+    missing = [f for f in features if f not in F]
+    if not features or missing:
+        # columnas que no sabemos calcular = predicciones basura; mejor la heurística y avisar
+        print(f"[model] {meta_path}: features desconocidas {missing[:5]}; uso la heurística")
         return HeuristicScorer()
     version = str(meta.get("version", "v2-model"))
     kind = meta.get("kind")
     if kind == "lightgbm":
-        return LightGBMScorer(model_dir / meta.get("file", "model.txt"), version)
-    if kind == "sklearn":
-        return SklearnScorer(model_dir / meta.get("file", "model.pkl"), version)
-    raise ValueError(f"tipo de modelo desconocido: {kind}")
+        scorer: Scorer = LightGBMScorer(model_dir / meta.get("file", "model.txt"), version)
+    elif kind == "sklearn":
+        scorer = SklearnScorer(model_dir / meta.get("file", "model.pkl"), version)
+    else:
+        raise ValueError(f"tipo de modelo desconocido: {kind}")
+    # un modelo entrenado con menos features (versión anterior) usa solo sus columnas, por nombre
+    if tuple(features) != FEATURE_NAMES:
+        scorer.cols = np.array([F[f] for f in features], dtype=np.int64)
+    return scorer
 
 
 class ModelWatcher:

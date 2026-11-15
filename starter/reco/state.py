@@ -46,6 +46,64 @@ class BanditStats:
         return shown, np.minimum(buys, shown)
 
 
+class LiftStats:
+    """Corrección por producto de lo que el modelo no sabe, aprendida del feedback en vivo.
+
+    Por cada producto que mostramos guardamos cuántas compras esperaba el modelo (su probabilidad,
+    por posición) y cuántas hubo. lift = (compras + alpha) / (esperadas + alpha): 1 si no hay datos,
+    >1 si se vende más de lo que el modelo cree (tendencia nueva, producto nuevo), <1 si menos.
+    El sesgo de posición se corrige con un factor por hueco (compras / esperadas en ese hueco).
+    alpha = cuántas compras esperadas de evidencia hacen falta para fiarse a medias."""
+
+    N_POS = 10
+
+    def __init__(self, alpha: float = 3.0, lo: float = 0.33, hi: float = 3.0) -> None:
+        self._lock = threading.Lock()
+        self.alpha, self.lo, self.hi = alpha, lo, hi
+        self.exp: dict[str, np.ndarray] = {}            # pid -> esperadas por hueco (sin corregir)
+        self.obs: dict[str, float] = defaultdict(float)
+        self.pos_exp = np.zeros(self.N_POS)
+        self.pos_buys = np.zeros(self.N_POS)
+
+    def update(self, shown: list[str], preds: dict[str, float], purchased: str) -> None:
+        with self._lock:
+            for k, pid in enumerate(shown[: self.N_POS]):
+                p = preds.get(pid)
+                if p is None or not np.isfinite(p):
+                    continue
+                v = self.exp.get(pid)
+                if v is None:
+                    v = self.exp[pid] = np.zeros(self.N_POS)
+                v[k] += p
+                self.pos_exp[k] += p
+                if purchased and purchased == pid:
+                    self.obs[pid] += 1.0
+                    self.pos_buys[k] += 1.0
+
+    def decay(self, factor: float) -> None:
+        with self._lock:
+            for v in self.exp.values():
+                v *= factor
+            for k in list(self.obs):
+                self.obs[k] *= factor
+            self.pos_exp *= factor
+            self.pos_buys *= factor
+
+    def lookup(self, pids: list[str]) -> np.ndarray:
+        out = np.ones(len(pids))
+        with self._lock:
+            if not self.exp:
+                return out
+            # factor por hueco, con prior hacia 1 (10 compras esperadas de evidencia)
+            c = (self.pos_buys + 10.0) / (self.pos_exp + 10.0)
+            for j, pid in enumerate(pids):
+                v = self.exp.get(pid)
+                if v is not None:
+                    e = float(v @ c)
+                    out[j] = (self.obs.get(pid, 0.0) + self.alpha) / (e + self.alpha)
+        return np.clip(out, self.lo, self.hi)
+
+
 class State:
     def __init__(self, products: ProductTable, artifacts: Artifacts, pop_provider: PopProvider,
                  bandit: BanditStats | None = None) -> None:
@@ -53,6 +111,7 @@ class State:
         self.artifacts = artifacts
         self._pop_provider = pop_provider
         self.bandit = bandit or BanditStats()
+        self.lift = LiftStats()
         self.fallback_ids: list[str] = list(artifacts.best_sellers[:500])
 
     def pop_at(self, ts: float) -> PopSnapshot:
@@ -61,6 +120,9 @@ class State:
     def bought(self, user_id: str) -> set[str]:
         """Productos que el usuario ya compró (no se los volvemos a ofrecer). Offline: desconocido."""
         return set()
+
+    def remember_preds(self, request_id: str, preds: dict) -> None:
+        """En vivo guarda las predicciones para aprender el lift; offline no hace nada."""
 
     def frozen(self, ts: float) -> "State":
         """Foto del estado para UNA petición: aunque un hilo de refresco cambie el catálogo o la
@@ -91,6 +153,7 @@ class _Frozen(State):
         self.products = parent.products
         self.artifacts = parent.artifacts
         self.bandit = parent.bandit
+        self.lift = parent.lift
         self.fallback_ids = parent.fallback_ids
         self._parent = parent
         self._pop = parent.pop_at(ts)

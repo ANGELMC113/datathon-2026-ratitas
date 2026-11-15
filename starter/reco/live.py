@@ -30,6 +30,7 @@ from .timeutil import to_float
 
 PURCHASE_MEMORY_S = 7 * 86400.0
 REQUEST_USER_MEMORY_S = 600.0
+PREDS_MEMORY_S = 1800.0           # cuánto guardamos lo que predijo el modelo, esperando su feedback
 
 
 class LiveState(State):
@@ -40,8 +41,10 @@ class LiveState(State):
         self._lock = threading.Lock()
         self._user_bought: dict[str, dict[str, float]] = defaultdict(dict)   # user -> {pid: ts}
         self._request_user: dict[str, tuple[str, float]] = {}                # request_id -> (user, t)
+        self._request_preds: dict[str, tuple[dict, float]] = {}              # request_id -> ({pid: p}, t)
         self.clock_offset = 0.0           # reloj del servidor - reloj local (s)
         self.catalog_ms = 0               # último ts aplicado de catalog_updates
+        self._applied: set[tuple[str, int, str]] = set()   # cambios ya aplicados
         self.purchases_ms = 0
         self.feedback_ms = 0
         self.health: dict[str, float] = {}  # tarea -> último éxito (time.time())
@@ -67,6 +70,13 @@ class LiveState(State):
             d = self._user_bought.get(user_id)
             return set(d) if d else set()
 
+    def remember_preds(self, request_id: str, preds: dict) -> None:
+        """Lo que predijo el modelo (sin corrección) para los productos servidos: al llegar el
+        feedback se compara con lo que se compró y se actualiza el lift (LiftStats)."""
+        if preds:
+            with self._lock:
+                self._request_preds[request_id] = (preds, time.time())
+
     def remember_request(self, request_id: str, user_id: str) -> None:
         """Para atribuir las compras del feedback (que no trae user_id) al usuario."""
         with self._lock:
@@ -82,6 +92,8 @@ class LiveState(State):
         rows = self.client.query(sql.catalog_updates_since(0), timeout=60)
         if rows:
             self.catalog_ms = int(max(to_float(r.get("ts_ms"), 0) for r in rows))
+            self._applied = {(str(r.get("product_id")), int(to_float(r.get("ts_ms"), 0)), str(r.get("change")))
+                             for r in rows if int(to_float(r.get("ts_ms"), 0)) >= self.catalog_ms}
             products = products.apply_updates(rows, artifacts.content)
         print(f"[live] catálogo: {len(products)} productos, {int(products.available.sum())} disponibles, "
               f"{len(rows)} cambios aplicados")
@@ -101,15 +113,21 @@ class LiveState(State):
         self.clock_offset = server - (t0 + t1) / 2.0
 
     def refresh_catalog(self) -> None:
+        """Cambios desde el último instante aplicado (>=: puede haber más del mismo milisegundo).
+        Los ya aplicados se descartan por (producto, ts, cambio)."""
         rows = self.client.query(sql.catalog_updates_since(self.catalog_ms), timeout=5, retries=0)
-        if not rows:
+        new = []
+        for r in rows:
+            key = (str(r.get("product_id")), int(to_float(r.get("ts_ms"), 0)), str(r.get("change")))
+            if key not in self._applied:
+                self._applied.add(key)
+                new.append(r)
+        if not new:
             return
-        last = int(max(to_float(r.get("ts_ms"), 0) for r in rows))
-        if last == self.catalog_ms and len(rows) <= getattr(self, "_last_catalog_batch", 0):
-            return                                   # mismos cambios del mismo instante: nada nuevo
-        self._last_catalog_batch = len(rows) if last == self.catalog_ms else 0
-        self.products = self.products.apply_updates(rows, self.artifacts.content)
-        self.catalog_ms = last
+        self.products = self.products.apply_updates(new, self.artifacts.content)
+        self.catalog_ms = max(self.catalog_ms, int(max(to_float(r.get("ts_ms"), 0) for r in new)))
+        if len(self._applied) > 200_000:            # solo hace falta recordar el último instante
+            self._applied = {k for k in self._applied if k[1] >= self.catalog_ms}
 
     def refresh_pop(self) -> None:
         products = self.products
@@ -169,7 +187,12 @@ class LiveState(State):
                 continue
             purchased = str(r.get("purchased") or "")
             if r.get("served_by") == "team":
-                self.bandit.update([str(p) for p in shown], purchased)
+                shown_s = [str(p) for p in shown]
+                self.bandit.update(shown_s, purchased)
+                with self._lock:
+                    hit = self._request_preds.pop(str(r.get("request_id")), None)
+                if hit is not None:
+                    self.lift.update(shown_s, hit[0], purchased)
             if purchased:
                 with self._lock:
                     user = self._request_user.get(str(r.get("request_id")), ("", 0.0))[0]
@@ -180,12 +203,15 @@ class LiveState(State):
 
     def decay_bandit(self) -> None:
         self.bandit.decay(0.9)
+        self.lift.decay(0.9)
 
     def _prune(self) -> None:
         now = time.time()
         with self._lock:
             for rid in [k for k, (_, t) in self._request_user.items() if now - t > REQUEST_USER_MEMORY_S]:
                 del self._request_user[rid]
+            for rid in [k for k, (_, t) in self._request_preds.items() if now - t > PREDS_MEMORY_S]:
+                del self._request_preds[rid]
             horizon = self.now_server() - PURCHASE_MEMORY_S
             for user in list(self._user_bought):
                 d = self._user_bought[user]

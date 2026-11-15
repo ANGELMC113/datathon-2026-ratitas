@@ -26,6 +26,7 @@ FEATURE_NAMES: tuple[str, ...] = (
     "pop_view_1d", "pop_cart_1d", "pop_buy_1d", "pop_view_7d", "pop_buy_7d", "pop_buy_all",
     "conv_7d", "trend_view",
     "car_shown_log", "car_click_lift", "car_buy_lift",
+    "trans_prod", "trans_sub",
 )
 F = {name: k for k, name in enumerate(FEATURE_NAMES)}
 
@@ -87,4 +88,8 @@ def build_matrix(state: State, sess: Session, cand: np.ndarray, positions: np.nd
     X[:, F["car_shown_log"]] = gather(car.shown_log, cand, 0.0)
     X[:, F["car_click_lift"]] = gather(car.click_lift, cand)
     X[:, F["car_buy_lift"]] = gather(car.buy_lift, cand)
+
+    X[:, F["trans_prod"]] = gather(sess.scores["trans"], cand, 0.0)
+    if len(sess.sub_trans):
+        X[:, F["trans_sub"]] = gather(sess.sub_trans, products.sub[cand].astype(np.int64), 0.0)
     return X

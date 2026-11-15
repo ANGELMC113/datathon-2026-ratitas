@@ -35,9 +35,9 @@ from reco.catalog import ProductTable
 from reco.client import from_env
 from reco.features import FEATURE_NAMES
 from reco.model import HeuristicScorer, Scorer
-from reco.offline import (build_artifacts, download_daily, download_impressions, evaluate_policies,
+from reco.offline import (build_artifacts, download_daily, download_purchase_paths, download_impressions, evaluate_policies,
                           feedback_impressions, fit_content, history_range, impressions_to_rows,
-                          load_catalog, log, offline_state, row_metrics)
+                          download_purchases, load_catalog, log, mark_prev_bought, offline_state, row_metrics)
 from reco.timeutil import DAY_MS
 
 OFFLINE = config.ARTIFACTS / "offline"
@@ -64,23 +64,63 @@ def backend_name(requested: str) -> str:
         return "sklearn"
 
 
+# Espacio de búsqueda de hiperparámetros (train.py --tune N). El primer punto es la configuración
+# por defecto, así que la búsqueda nunca empeora en validación.
+SEARCH_SPACE = {
+    "num_leaves": [15, 31, 63, 127],          # complejidad de cada árbol
+    "min_data_in_leaf": [50, 100, 200, 500],  # filas mínimas por hoja: más = menos sobreajuste
+    "learning_rate": [0.03, 0.05, 0.1],
+    "feature_fraction": [0.6, 0.8, 1.0],      # fracción de features que ve cada árbol
+    "lambda_l2": [0.0, 1.0, 5.0],             # regularización
+}
+BEST_PARAMS = "best_params.json"
+
+
+def sample_params(n: int, seed: int = 7) -> list[dict]:
+    rng = np.random.default_rng(seed)
+    out = [{k: LGB_PARAMS[k] for k in SEARCH_SPACE}]
+    seen = {json.dumps(out[0], sort_keys=True)}
+    while len(out) < n and len(seen) < 500:
+        cand = {k: v[int(rng.integers(len(v)))] for k, v in SEARCH_SPACE.items()}
+        key = json.dumps(cand, sort_keys=True, default=float)
+        if key not in seen:
+            seen.add(key)
+            out.append(cand)
+    return out
+
+
+def _sklearn_params(params: dict | None) -> dict:
+    """Traducción a HistGradientBoosting (solo si falta lightgbm)."""
+    p = {**{k: LGB_PARAMS[k] for k in SEARCH_SPACE}, **(params or {})}
+    out = dict(learning_rate=float(p["learning_rate"]), max_leaf_nodes=int(p["num_leaves"]),
+               min_samples_leaf=int(p["min_data_in_leaf"]), l2_regularization=float(p["lambda_l2"]),
+               random_state=7)
+    if float(p["feature_fraction"]) < 1.0:
+        out["max_features"] = float(p["feature_fraction"])
+    return out
+
+
 def fit(backend: str, X: np.ndarray, y: np.ndarray, w: np.ndarray, Xv: np.ndarray | None = None,
-        yv: np.ndarray | None = None, wv: np.ndarray | None = None, rounds: int | None = None):
-    """Devuelve (modelo, n_árboles). Con validación usa parada temprana; sin ella, `rounds` fijo."""
+        yv: np.ndarray | None = None, wv: np.ndarray | None = None, rounds: int | None = None,
+        params: dict | None = None, verbose: bool = True):
+    """Devuelve (modelo, n_árboles). Con validación usa parada temprana; sin ella, `rounds` fijo.
+    `params` sobrescribe LGB_PARAMS (los del ajuste de hiperparámetros)."""
     if backend == "lightgbm":
         import lightgbm as lgb
+        p = {**LGB_PARAMS, **(params or {})}
         dtrain = lgb.Dataset(X, y, weight=w, feature_name=list(FEATURE_NAMES), free_raw_data=False)
         if Xv is not None:
             dvalid = lgb.Dataset(Xv, yv, weight=wv, reference=dtrain)
-            booster = lgb.train(LGB_PARAMS, dtrain, num_boost_round=3000, valid_sets=[dvalid],
-                                callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(100)])
+            callbacks = [lgb.early_stopping(100, verbose=False)]
+            if verbose:
+                callbacks.append(lgb.log_evaluation(100))
+            booster = lgb.train(p, dtrain, num_boost_round=3000, valid_sets=[dvalid], callbacks=callbacks)
             return booster, max(int(booster.best_iteration), 1)
-        booster = lgb.train(LGB_PARAMS, dtrain, num_boost_round=int(rounds or 300))
+        booster = lgb.train(p, dtrain, num_boost_round=int(rounds or 300))
         return booster, int(rounds or 300)
 
     from sklearn.ensemble import HistGradientBoostingClassifier
-    params = dict(learning_rate=0.05, max_leaf_nodes=31, min_samples_leaf=200, l2_regularization=1.0,
-                  random_state=7)
+    params = _sklearn_params(params)
     if Xv is not None:
         # sklearn no acepta un conjunto de validación externo: buscamos el nº de árboles a mano
         best, best_iter, model = np.inf, 50, None
@@ -179,9 +219,11 @@ def build(args) -> None:
         pickle.dump({"catalog": catalog, "daily": daily, "daily_tables": tables,
                      "cuts": (t0, cut_a, cut_b, end)}, f)
 
+    paths = download_purchase_paths(client, t0, end)
+    sub_of = dict(zip(catalog["product_id"].astype(str), catalog["subcategory"].astype(str)))
     for name, until in (("A", cut_a), ("B", cut_b), ("LIVE", end)):
         log(f"artefactos {name} (histórico < {pd.Timestamp(until, unit='ms')})")
-        art = build_artifacts(client, product_ids, content, emb, until)
+        art = build_artifacts(client, product_ids, content, emb, until, paths=paths, sub_of=sub_of)
         art.save(OFFLINE / f"artifacts_{name}.pkl")
         if name == "LIVE":
             art.save(config.LIVE_ARTIFACTS)
@@ -195,7 +237,7 @@ def build(args) -> None:
         json.dump({"keep_permille": args.keep_permille, "cuts": [t0, cut_a, cut_b, end]}, f)
 
 
-def main(argv: list[str] | None = None) -> None:
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build", action="store_true", help="descargar datos y construir artefactos")
     ap.add_argument("--version", default=None, help="model_version, p. ej. v2-lgbm")
@@ -207,6 +249,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--with-feedback", action="store_true", help="añadir impresiones propias del stream")
     ap.add_argument("--include-live-events", action="store_true",
                     help="incluir shop.events en la popularidad diaria (necesario con --with-feedback)")
+    ap.add_argument("--keep-rebuys", action="store_true",
+                    help="no quitar del entrenamiento lo que el usuario ya había comprado (antes de v5)")
+    ap.add_argument("--default-params", action="store_true",
+                    help="ignorar best_params.json y usar los hiperparámetros de serie (como v2/v3)")
     ap.add_argument("--eval-imps", type=int, default=5000)
     ap.add_argument("--no-save", action="store_true")
     ap.add_argument("--model-dir", type=Path, default=None,
@@ -215,11 +261,23 @@ def main(argv: list[str] | None = None) -> None:
                     help="con --with-feedback: deja fuera los últimos N minutos de feedback para comparar "
                          "el modelo nuevo con el que está desplegado")
     ap.add_argument("--threads", type=int, default=0, help="hilos de LightGBM (0 = todos)")
+    ap.add_argument("--feedback-weight", type=float, default=1.0,
+                    help="peso de las impresiones propias del stream frente al histórico (p. ej. 5)")
+    ap.add_argument("--feedback-half-life", type=float, default=0.0,
+                    help="horas: el feedback pierde la mitad de su peso cada N horas (0 = todo igual)")
+    ap.add_argument("--compare-dir", type=Path, default=None,
+                    help="modelo con el que comparar en lo reservado (por defecto artifacts/model)")
+    ap.add_argument("--tune", type=int, default=0,
+                    help="probar N combinaciones de hiperparámetros en validación y guardar la mejor "
+                         f"(artifacts/offline/{BEST_PARAMS}); los entrenamientos siguientes la usan")
     args = ap.parse_args(argv)
-    LGB_PARAMS["num_threads"] = args.threads
     if args.with_feedback:
         args.include_live_events = True
+    return args
 
+
+def load_folds(args) -> dict:
+    """Datos descargados + filas de entrenamiento (días 41-50) y validación (51-60)."""
     if args.build or not (OFFLINE / "base.pkl").exists():
         build(args)
     with open(OFFLINE / "base.pkl", "rb") as f:
@@ -227,21 +285,22 @@ def main(argv: list[str] | None = None) -> None:
     keep = json.loads((OFFLINE / "build.json").read_text())["keep_permille"]
     neg_w = 1000.0 / keep                       # compensa el muestreo de impresiones sin compra
     catalog: pd.DataFrame = base["catalog"]
-    daily: DailyPop = base["daily"]
     if args.with_feedback or (args.include_live_events and "shop.events" not in base.get("daily_tables", ())):
         # con feedback siempre se actualiza: los días del stream crecen y la popularidad debe incluirlos
         log("actualizando la popularidad diaria con shop.events (para las impresiones del stream)")
-        daily = download_daily(from_env(timeout=600, retries=2), catalog["product_id"].tolist(),
-                               ("shop.history_events", "shop.events"))
-        base.update(daily=daily, daily_tables=("shop.history_events", "shop.events"))
+        base["daily"] = download_daily(from_env(timeout=600, retries=2), catalog["product_id"].tolist(),
+                                       ("shop.history_events", "shop.events"))
+        base["daily_tables"] = ("shop.history_events", "shop.events")
         with open(OFFLINE / "base.pkl", "wb") as f:
             pickle.dump(base, f)
+    daily: DailyPop = base["daily"]
     art_a = Artifacts.load(OFFLINE / "artifacts_A.pkl")
     art_b = Artifacts.load(OFFLINE / "artifacts_B.pkl")
     products = ProductTable.from_frame(catalog, emb=art_b.emb, order=art_b.product_ids)
     imps_a = pd.read_pickle(OFFLINE / "imps_A.pkl")
     imps_b = pd.read_pickle(OFFLINE / "imps_B.pkl")
-
+    if not args.keep_rebuys:
+        imps_a, imps_b = drop_rebuys(args, base, imps_a, imps_b)
     st_a = offline_state(products, art_a, daily)
     st_b = offline_state(products, art_b, daily)
     t = time.time()
@@ -249,60 +308,136 @@ def main(argv: list[str] | None = None) -> None:
     rows_b = impressions_to_rows(st_b, imps_b, neg_w)
     log(f"filas: entrenamiento {len(rows_a['y'])} ({int(rows_a['y'].sum())} compras), "
         f"validación {len(rows_b['y'])} ({int(rows_b['y'].sum())} compras) en {time.time() - t:.0f} s")
+    return {"base": base, "catalog": catalog, "daily": daily, "st_b": st_b, "imps_b": imps_b,
+            "rows_a": rows_a, "rows_b": rows_b}
 
-    backend = backend_name(args.backend)
-    model, best_iter = fit(backend, rows_a["X"], rows_a["y"], rows_a["w"], rows_b["X"], rows_b["y"], rows_b["w"])
-    p_b = predict(backend, model, rows_b["X"])
-    metrics = {"valid_rows": row_metrics(p_b, rows_b), "best_iter": best_iter}
-    heur_metrics = row_metrics(HeuristicScorer().predict(rows_b["X"]), rows_b)
+
+def drop_rebuys(args, base: dict, imps_a: pd.DataFrame, imps_b: pd.DataFrame):
+    """Marca en cada impresión lo que el usuario ya había comprado para quitarlo de las filas.
+    Las compras se descargan una vez y se guardan en artifacts/offline/purchases.pkl."""
+    path = OFFLINE / "purchases.pkl"
+    _, cut_a, _, end = base["cuts"]
+    if args.build or not path.exists():
+        download_purchases(from_env(timeout=600, retries=2), cut_a - 7 * DAY_MS, end).to_pickle(path)
+    purchases = pd.read_pickle(path)
+    imps_a, imps_b = mark_prev_bought(imps_a, purchases), mark_prev_bought(imps_b, purchases)
+    for name, imps in (("entrenamiento", imps_a), ("validación", imps_b)):
+        rebuy = sum(1 for b, prev in zip(imps["purchased"], imps["prev_bought"]) if b and b in prev)
+        n_buy = int((imps["purchased"] != "").sum())
+        log(f"recompras quitadas de {name}: {rebuy} de {n_buy} compras "
+            f"({100 * rebuy / max(n_buy, 1):.1f} %; el simulador evaluado casi no las tiene)")
+    return imps_a, imps_b
+
+
+def tune(backend: str, rows_a: dict, rows_b: dict, n: int) -> dict:
+    """Búsqueda aleatoria de hiperparámetros; gana el menor logloss en validación (queremos
+    probabilidades bien calibradas, no solo buen orden). Guarda la mejor en best_params.json."""
+    results = []
+    for k, params in enumerate(sample_params(n)):
+        t = time.time()
+        model, it = fit(backend, rows_a["X"], rows_a["y"], rows_a["w"], rows_b["X"], rows_b["y"], rows_b["w"],
+                        params=params, verbose=False)
+        m = row_metrics(predict(backend, model, rows_b["X"]), rows_b)
+        results.append({**params, "trees": it, **{x: m.get(x) for x in ("logloss", "auc", "mrr_in_shown_model")},
+                        "seconds": round(time.time() - t)})
+        log(f"  ajuste {k + 1}/{n}: {params} -> logloss {m.get('logloss', float('nan')):.6f} "
+            f"AUC {m.get('auc', float('nan')):.4f} ({it} árboles)")
+    table = pd.DataFrame(results).sort_values("logloss")
+    print(table.to_string(index=False))
+    table.to_csv(OFFLINE / "tuning.csv", index=False)
+    best = {k: table.iloc[0][k] for k in SEARCH_SPACE}
+    best = {k: (int(v) if k in ("num_leaves", "min_data_in_leaf") else float(v)) for k, v in best.items()}
+    (OFFLINE / BEST_PARAMS).write_text(json.dumps(best, indent=2))
+    log(f"mejores hiperparámetros: {best} (guardados en {OFFLINE / BEST_PARAMS})")
+    return best
+
+
+def load_best_params() -> dict | None:
+    path = OFFLINE / BEST_PARAMS
+    if path.exists():
+        params = json.loads(path.read_text())
+        log(f"uso los hiperparámetros ajustados de {path}: {params}")
+        return params
+    return None
+
+
+def validate(args, backend: str, folds: dict, params: dict | None) -> tuple:
+    """Modelo entrenado con días 41-50 y evaluado en 51-60: métricas y nº de árboles."""
+    rows_a, rows_b = folds["rows_a"], folds["rows_b"]
+    model, best_iter = fit(backend, rows_a["X"], rows_a["y"], rows_a["w"], rows_b["X"], rows_b["y"], rows_b["w"],
+                           params=params)
+    metrics = {"valid_rows": row_metrics(predict(backend, model, rows_b["X"]), rows_b), "best_iter": best_iter,
+               "params": params or {k: LGB_PARAMS[k] for k in SEARCH_SPACE}}
     log(f"validación (filas mostradas) modelo: {metrics['valid_rows']}")
-    log(f"validación (filas mostradas) heurística: {heur_metrics}")
-
+    log(f"validación (filas mostradas) heurística: {row_metrics(HeuristicScorer().predict(rows_b['X']), rows_b)}")
     imp = importance(backend, model)
     if imp is not None:
         print(imp.head(15).to_string(index=False))
-
     log("evaluación de la lista completa (candidatos + orden) en días 51-60 ...")
-    summary = evaluate_policies(st_b, imps_b, {"heuristica": HeuristicScorer(),
-                                               "modelo": _InMemoryScorer(backend, model, "valid")},
+    summary = evaluate_policies(folds["st_b"], folds["imps_b"],
+                                {"heuristica": HeuristicScorer(), "modelo": _InMemoryScorer(backend, model, "valid")},
                                 max_imps=args.eval_imps)
     print(summary.round(4).to_string())
     metrics["policies"] = summary.round(5).to_dict()
+    return model, best_iter, metrics, imp
+
+
+def feedback_rows(args, folds: dict) -> tuple[dict | None, dict | None]:
+    """Nuestras propias impresiones del stream (las últimas `holdout_minutes` se reservan)."""
+    client = from_env(timeout=600, retries=2)
+    imps_fb = feedback_impressions(client, client.team, config.LOGS)
+    if not len(imps_fb):
+        return None, None
+    art_live = Artifacts.load(OFFLINE / "artifacts_LIVE.pkl")
+    prod_live = ProductTable.from_frame(folds["catalog"], emb=art_live.emb, order=art_live.product_ids)
+    prod_live = prod_live.apply_updates(client.query(sql.catalog_updates_since(0), timeout=120),
+                                        art_live.content, live_since_s=folds["base"]["cuts"][3] / 1000.0)
+    st_fb = offline_state(prod_live, art_live, folds["daily"])
+    rows_hold = None
+    if args.holdout_minutes > 0:
+        cut = float(imps_fb["ts_ms"].max()) - args.holdout_minutes * 60_000
+        imps_hold, imps_fb = imps_fb[imps_fb["ts_ms"] > cut], imps_fb[imps_fb["ts_ms"] <= cut]
+        rows_hold = impressions_to_rows(st_fb, imps_hold, 1.0)
+        log(f"feedback: {len(imps_fb)} impresiones para entrenar, {len(imps_hold)} reservadas "
+            f"(últimos {args.holdout_minutes} min, {int(rows_hold['y'].sum())} compras) para comparar")
+    rows_fb = impressions_to_rows(st_fb, imps_fb, 1.0)
+    rows_fb["w"] = rows_fb["w"] * args.feedback_weight
+    if args.feedback_half_life > 0 and len(rows_fb["y"]):
+        # lo reciente pesa más: cada `half_life` horas de antigüedad, la mitad de peso
+        age_h = (float(imps_fb["ts_ms"].max()) - imps_fb["ts_ms"].to_numpy(dtype=float)) / 3.6e6
+        decay = 0.5 ** (age_h / args.feedback_half_life)
+        rows_fb["w"] = rows_fb["w"] * decay[rows_fb["g"]].astype(np.float32)
+        log(f"feedback con vida media de {args.feedback_half_life} h: peso medio {decay.mean():.2f}")
+    return (rows_fb if len(rows_fb["y"]) else None), rows_hold
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    LGB_PARAMS["num_threads"] = args.threads
+    folds = load_folds(args)
+    backend = backend_name(args.backend)
+
+    params = tune(backend, folds["rows_a"], folds["rows_b"], args.tune) if args.tune > 0 else (None if args.default_params else load_best_params())
+    model, best_iter, metrics, imp = validate(args, backend, folds, params)
 
     # --- modelo final: A + B (+ feedback), con el nº de árboles elegido en validación ---
-    X, y, w = [rows_a["X"], rows_b["X"]], [rows_a["y"], rows_b["y"]], [rows_a["w"], rows_b["w"]]
+    rows = [folds["rows_a"], folds["rows_b"]]
     rows_hold = None
     if args.with_feedback:
-        client = from_env(timeout=600, retries=2)
-        imps_fb = feedback_impressions(client, client.team, config.LOGS)
-        if len(imps_fb):
-            art_live = Artifacts.load(OFFLINE / "artifacts_LIVE.pkl")
-            prod_live = ProductTable.from_frame(catalog, emb=art_live.emb, order=art_live.product_ids)
-            prod_live = prod_live.apply_updates(client.query(sql.catalog_updates_since(0), timeout=120),
-                                                art_live.content, live_since_s=base["cuts"][3] / 1000.0)
-            st_fb = offline_state(prod_live, art_live, daily)
-            if args.holdout_minutes > 0:
-                cut = float(imps_fb["ts_ms"].max()) - args.holdout_minutes * 60_000
-                imps_hold = imps_fb[imps_fb["ts_ms"] > cut]
-                imps_fb = imps_fb[imps_fb["ts_ms"] <= cut]
-                rows_hold = impressions_to_rows(st_fb, imps_hold, 1.0)
-                log(f"feedback: {len(imps_fb)} impresiones para entrenar, {len(imps_hold)} reservadas "
-                    f"(últimos {args.holdout_minutes} min, {int(rows_hold['y'].sum())} compras) para comparar")
-            rows_fb = impressions_to_rows(st_fb, imps_fb, 1.0)
-            if len(rows_fb["y"]):
-                fb_metrics = row_metrics(predict(backend, model, rows_fb["X"]), rows_fb)
-                log(f"modelo de validación sobre el feedback propio: {fb_metrics}")
-                metrics["feedback_rows"] = fb_metrics
-                X.append(rows_fb["X"]); y.append(rows_fb["y"]); w.append(rows_fb["w"])
-
+        rows_fb, rows_hold = feedback_rows(args, folds)
+        if rows_fb is not None:
+            metrics["feedback_rows"] = row_metrics(predict(backend, model, rows_fb["X"]), rows_fb)
+            log(f"modelo de validación sobre el feedback propio: {metrics['feedback_rows']}")
+            rows.append(rows_fb)
     rounds = max(int(best_iter * 1.1), 50)
-    final, _ = fit(backend, np.vstack(X), np.concatenate(y), np.concatenate(w), rounds=rounds)
+    final, _ = fit(backend, np.vstack([r["X"] for r in rows]), np.concatenate([r["y"] for r in rows]),
+                   np.concatenate([r["w"] for r in rows]), rounds=rounds, params=params)
     version = args.version or f"v2-{backend}-{time.strftime('%d%H%M')}"
 
     # --- comparación justa con el modelo desplegado: los últimos minutos que ninguno ha visto ---
     if rows_hold is not None and len(rows_hold["y"]):
         from reco.model import load_scorer
-        current = load_scorer(config.MODEL_DIR)
+        current = load_scorer(args.compare_dir or config.MODEL_DIR)
         metrics["holdout"] = {
             "n_rows": int(len(rows_hold["y"])), "n_buys": int(rows_hold["y"].sum()),
             "candidate": row_metrics(predict(backend, final, rows_hold["X"]), rows_hold),

@@ -240,6 +240,9 @@ class Artifacts:
     buy_all: np.ndarray
     best_sellers: list[str]
     meta: dict = field(default_factory=dict)
+    # transiciones "vista -> compra en el carrusel" (None/{} en artefactos antiguos)
+    trans_prod: "Neighbors | None" = None              # producto visto -> producto comprado
+    trans_sub: dict = field(default_factory=dict)      # subcategoría vista -> {subcategoría comprada: tasa}
 
     @classmethod
     def empty(cls, product_ids: list[str], emb: np.ndarray | None = None) -> "Artifacts":

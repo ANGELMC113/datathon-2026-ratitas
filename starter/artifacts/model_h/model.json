@@ -1,0 +1,89 @@
+{
+  "metrics": {
+    "valid_rows": {
+      "auc": 0.8853584339629211,
+      "logloss": 0.006433499443196862,
+      "mrr_in_shown_model": 0.6294482158274746,
+      "mrr_in_shown_old_order": 0.4842812716960907
+    },
+    "best_iter": 158,
+    "params": {
+      "num_leaves": 31,
+      "min_data_in_leaf": 200,
+      "learning_rate": 0.05,
+      "feature_fraction": 0.8,
+      "lambda_l2": 1.0
+    },
+    "policies": {
+      "todas": {
+        "baseline": 0.51354,
+        "heuristica": 0.5168,
+        "modelo": 0.73895,
+        "recall@50": 0.89025,
+        "recall@100": 0.95928,
+        "recall@200": 0.989,
+        "n_impresiones": 4911.0,
+        "heuristica MRR@10": 0.28726,
+        "modelo MRR@10": 0.39564
+      },
+      "cold": {
+        "baseline": 0.54783,
+        "heuristica": 0.54783,
+        "modelo": 0.56522,
+        "recall@50": 0.81739,
+        "recall@100": 0.90435,
+        "recall@200": 0.94783,
+        "n_impresiones": 115.0,
+        "heuristica MRR@10": 0.20575,
+        "modelo MRR@10": 0.2081
+      }
+    },
+    "feedback_rows": {
+      "auc": 0.8145655408878001,
+      "logloss": 0.008596007947619267,
+      "mrr_in_shown_model": 0.5761482216343328,
+      "mrr_in_shown_old_order": 0.5870212316513062
+    }
+  },
+  "rounds": 173,
+  "kind": "lightgbm",
+  "version": "v3-norebuy",
+  "file": "model.txt",
+  "features": [
+    "position",
+    "hour",
+    "device",
+    "page",
+    "n_recent",
+    "in_recent",
+    "recent_rank",
+    "recent_count",
+    "covis_view",
+    "covis_buy",
+    "covis_b2b",
+    "content_knn",
+    "content_sim",
+    "content_sim_last",
+    "cat_share",
+    "sub_share",
+    "brand_share",
+    "same_sub_last",
+    "log_price",
+    "price_ratio",
+    "age_days",
+    "pop_view_1d",
+    "pop_cart_1d",
+    "pop_buy_1d",
+    "pop_view_7d",
+    "pop_buy_7d",
+    "pop_buy_all",
+    "conv_7d",
+    "trend_view",
+    "car_shown_log",
+    "car_click_lift",
+    "car_buy_lift",
+    "trans_prod",
+    "trans_sub"
+  ],
+  "trained_at": "2026-11-15 04:52:53"
+}

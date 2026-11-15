@@ -78,13 +78,15 @@ def record(row: dict) -> None:
 
 def run_once(args) -> bool:
     version = f"{args.prefix}-{datetime.now():%d%H%M}"
-    cand = config.ARTIFACTS / "candidate"
+    cand = config.ARTIFACTS / f"candidate_{Path(args.target_dir).name}"
     shutil.rmtree(cand, ignore_errors=True)
     config.LOGS.mkdir(parents=True, exist_ok=True)
     out = config.LOGS / f"train-{version}.log"
     cmd = [sys.executable, str(HERE / "train.py"), "--with-feedback", "--holdout-minutes", str(args.holdout_minutes),
            "--model-dir", str(cand), "--version", version, "--threads", str(args.threads),
-           "--backend", args.backend, "--eval-imps", "1500"]
+           "--backend", args.backend, "--eval-imps", "1500", "--compare-dir", str(args.target_dir),
+           "--feedback-weight", str(args.feedback_weight),
+           "--feedback-half-life", str(args.feedback_half_life)]
     log(f"entrenando {version} (salida en {out}) ...")
     t = time.time()
     with open(out, "w") as f:
@@ -104,7 +106,7 @@ def run_once(args) -> bool:
         reason = "(simulación) " + reason
         ok = False
     if ok:
-        deploy(cand, config.MODEL_DIR)
+        deploy(cand, args.target_dir)
         log(f"DESPLEGADO {version}: {reason}")
     else:
         log(f"no se despliega {version}: {reason}")
@@ -128,9 +130,17 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--backend", default="auto")
     ap.add_argument("--prefix", default="v3-auto")
     ap.add_argument("--timeout-min", type=int, default=90)
+    ap.add_argument("--target-dir", type=Path, default=config.MODEL_DIR,
+                    help="qué modelo actualizar (por defecto el principal; p. ej. artifacts/model_c para "
+                         "reentrenar solo una variante del A/B)")
+    ap.add_argument("--feedback-weight", type=float, default=1.0,
+                    help="peso del feedback propio frente al histórico al reentrenar")
+    ap.add_argument("--feedback-half-life", type=float, default=0.0,
+                    help="horas: el feedback antiguo pierde la mitad de su peso cada N horas (0 = todo igual)")
     ap.add_argument("--once", action="store_true", help="un solo ciclo y salir")
     ap.add_argument("--dry-run", action="store_true", help="entrena y compara, pero no despliega")
     args = ap.parse_args(argv)
+    args.target_dir = Path(args.target_dir).resolve()
     freeze = datetime.strptime(args.freeze_at, "%Y-%m-%d %H:%M") if args.freeze_at else None
 
     while True:

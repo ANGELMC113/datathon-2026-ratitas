@@ -19,9 +19,27 @@ POOL_SIZE = 33
 MAX_NEW_IN_POOL = 10
 
 
+def diversify(products, clean: list[int], clean_s: list[float], max_per_sub: int) -> tuple[list[int], list[float]]:
+    """Como mucho `max_per_sub` productos por subcategoría delante; los que sobran pasan detrás,
+    en su orden. Así diez productos casi iguales no ocupan toda la lista: el comprador compra
+    como mucho uno, y cubrir varios intereses suyos da más opciones de acertar."""
+    count: dict[int, int] = {}
+    first, first_s, rest, rest_s = [], [], [], []
+    for i, s in zip(clean, clean_s):
+        c = int(products.sub[i])
+        if count.get(c, 0) < max_per_sub:
+            count[c] = count.get(c, 0) + 1
+            first.append(i)
+            first_s.append(s)
+        else:
+            rest.append(i)
+            rest_s.append(s)
+    return first + rest, first_s + rest_s
+
+
 def rerank_idx(state: State, ranked: np.ndarray, scores: np.ndarray, sess: Session,
                rng: np.random.Generator | None, n: int = 10, n_explore: int = 3,
-               prior: float = 50.0) -> list[int]:
+               prior: float = 50.0, max_per_sub: int = 0) -> list[int]:
     products = state.products
     total = len(products)
     seen: set[int] = set()
@@ -34,6 +52,8 @@ def rerank_idx(state: State, ranked: np.ndarray, scores: np.ndarray, sess: Sessi
         seen.add(i)
         clean.append(i)
         clean_s.append(float(s))
+    if max_per_sub > 0:
+        clean, clean_s = diversify(products, clean, clean_s, max_per_sub)
 
     n_explore = n_explore if rng is not None else 0
     head = clean[: n - n_explore]

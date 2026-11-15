@@ -31,6 +31,7 @@ class Session:
     scores: dict[str, np.ndarray]  # puntuación densa por producto: view, buy, b2b, knn
     cat_share: np.ndarray
     sub_share: np.ndarray
+    sub_trans: np.ndarray         # por código de subcategoría: tasa de compra tras las vistas
     brand_share: np.ndarray
     last_sub: int
     centroid: np.ndarray | None
@@ -52,7 +53,7 @@ def _context(request: dict) -> dict:
     return ctx
 
 
-def _recent_views(request: dict) -> list[tuple[str, float]]:
+def recent_views(request: dict) -> list[tuple[str, float]]:
     rv = request.get("recent_views")
     if isinstance(rv, str):
         try:
@@ -94,7 +95,7 @@ def make_session(state: State, request: dict, max_recent: int = 10, decay: float
         ts = time.time()
     user_id = str(request.get("user_id") or "")
 
-    views = _recent_views(request)
+    views = recent_views(request)
     if views and all(not math.isnan(t) for _, t in views):
         order = sorted(range(len(views)), key=lambda k: (views[k][1], k), reverse=True)
     else:
@@ -140,6 +141,28 @@ def make_session(state: State, request: dict, max_recent: int = 10, decay: float
             acc[got[0]] += wi * got[1]
     scores["knn"] = acc
 
+    # transiciones "vista -> compra en el carrusel" (si los artefactos las traen)
+    acc = np.zeros(n, dtype=np.float32)
+    trans = getattr(art, "trans_prod", None)
+    if trans is not None:
+        for i, wi in zip(rec, w):
+            got = trans.get(int(i))
+            if got is not None:
+                acc[got[0]] += wi * got[1]
+    scores["trans"] = acc
+    sub_trans = np.zeros(len(products.vocab_sub.codes), dtype=np.float32)
+    trans_sub = getattr(art, "trans_sub", None) or {}
+    if trans_sub and len(rec):
+        names = products.sub_names()
+        ws_t = w / w.sum()
+        for i, wi in zip(rec, ws_t):
+            row = trans_sub.get(names[int(products.sub[i])])
+            if row:
+                for sb, val in row.items():
+                    c = products.vocab_sub.codes.get(sb)
+                    if c is not None:
+                        sub_trans[c] += wi * val
+
     if len(rec):
         ws = w / w.sum()
         cat_share = np.bincount(products.cat[rec], weights=ws, minlength=len(products.vocab_cat.codes))
@@ -164,7 +187,7 @@ def make_session(state: State, request: dict, max_recent: int = 10, decay: float
         page=float(PAGE_CODES.get(str(ctx.get("page", "")), math.nan)),
         n_recent=len(views), recent=rec, recent_w=w,
         recent_rank={int(i): k for k, i in enumerate(rec)}, recent_count=count,
-        scores=scores, cat_share=cat_share, sub_share=sub_share, brand_share=brand_share,
+        scores=scores, cat_share=cat_share, sub_share=sub_share, sub_trans=sub_trans, brand_share=brand_share,
         last_sub=last_sub, centroid=centroid, last_emb=last_emb, med_price=med_price,
         bought=bought, cold=cold,
     )

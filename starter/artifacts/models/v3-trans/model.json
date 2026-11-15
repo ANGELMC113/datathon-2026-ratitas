@@ -1,0 +1,76 @@
+{
+  "metrics": {
+    "valid_rows": {
+      "auc": 0.9010524036947736,
+      "logloss": 0.00846276335207283,
+      "mrr_in_shown_model": 0.6536965122029263,
+      "mrr_in_shown_old_order": 0.5125773549079895
+    },
+    "best_iter": 267,
+    "policies": {
+      "todas": {
+        "baseline": 0.51354,
+        "heuristica": 0.5168,
+        "modelo": 0.76685,
+        "recall@50": 0.89025,
+        "recall@100": 0.95928,
+        "recall@200": 0.989,
+        "n_impresiones": 4911.0,
+        "heuristica MRR@10": 0.28726,
+        "modelo MRR@10": 0.44754
+      },
+      "cold": {
+        "baseline": 0.54783,
+        "heuristica": 0.54783,
+        "modelo": 0.57391,
+        "recall@50": 0.81739,
+        "recall@100": 0.90435,
+        "recall@200": 0.94783,
+        "n_impresiones": 115.0,
+        "heuristica MRR@10": 0.20575,
+        "modelo MRR@10": 0.23695
+      }
+    }
+  },
+  "rounds": 293,
+  "kind": "lightgbm",
+  "version": "v3-trans",
+  "file": "model.txt",
+  "features": [
+    "position",
+    "hour",
+    "device",
+    "page",
+    "n_recent",
+    "in_recent",
+    "recent_rank",
+    "recent_count",
+    "covis_view",
+    "covis_buy",
+    "covis_b2b",
+    "content_knn",
+    "content_sim",
+    "content_sim_last",
+    "cat_share",
+    "sub_share",
+    "brand_share",
+    "same_sub_last",
+    "log_price",
+    "price_ratio",
+    "age_days",
+    "pop_view_1d",
+    "pop_cart_1d",
+    "pop_buy_1d",
+    "pop_view_7d",
+    "pop_buy_7d",
+    "pop_buy_all",
+    "conv_7d",
+    "trend_view",
+    "car_shown_log",
+    "car_click_lift",
+    "car_buy_lift",
+    "trans_prod",
+    "trans_sub"
+  ],
+  "trained_at": "2026-11-14 21:32:51"
+}

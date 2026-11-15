@@ -155,10 +155,17 @@ class FakeClient:
                 return []
             event = re.search(r"event_type = '(\w+)'", q).group(1)
             return daily[event].to_dict("records")
+        if "all_purchases" in q:                    # compras previas: las del carrusel sintético
+            sel = imps[imps.purchased != ""]
+            return [{"u": str(r.user_id), "p": r.purchased, "t": str(int(r.ts_ms))} for r in sel.itertuples()]
         if "INNER JOIN" in q:
             return covis.to_dict("records")
         if "ARRAY JOIN" in q:
             return car.to_dict("records")
+        if "purchase_paths" in q:
+            lo, hi = map(int, re.search(r">= (\d+) AND \S+ < (\d+)", q).groups())
+            sel = imps[(imps.ts_ms >= lo) & (imps.ts_ms < hi) & (imps.purchased != "")]
+            return sel[["ts_ms", "recent_views", "purchased"]].to_dict("records")
         if "cityHash64" in q:
             lo, hi = map(int, re.search(r">= (\d+) AND \S+ < (\d+)", q).groups())
             sel = imps[(imps.ts_ms >= lo) & (imps.ts_ms < hi)]

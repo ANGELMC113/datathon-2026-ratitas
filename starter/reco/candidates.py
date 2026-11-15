@@ -11,8 +11,10 @@ from .session import Session
 from .state import State
 
 # (fuente, cupo máximo) en orden de prioridad; lo que sobra se rellena con los más vendidos
-QUOTAS = (("recent", 10), ("view", 60), ("buy", 40), ("b2b", 20), ("knn", 30),
+QUOTAS = (("recent", 10), ("trans", 40), ("view", 60), ("buy", 40), ("b2b", 20), ("knn", 30),
           ("new", 10), ("cat", 15), ("trending", 10))
+# búsqueda de antes de las transiciones (la que usaba v2-lgbm hasta las 21:43)
+QUOTAS_OLD = tuple(q for q in QUOTAS if q[0] != "trans")
 
 
 def _top(scores: np.ndarray, k: int) -> np.ndarray:
@@ -22,7 +24,7 @@ def _top(scores: np.ndarray, k: int) -> np.ndarray:
     return nz[np.argsort(-scores[nz], kind="stable")]
 
 
-def generate(state: State, sess: Session, n: int = 200) -> np.ndarray:
+def generate(state: State, sess: Session, n: int = 200, quotas: tuple = QUOTAS) -> np.ndarray:
     products = state.products
     total = len(products)
     allowed = products.available.copy()
@@ -43,7 +45,7 @@ def generate(state: State, sess: Session, n: int = 200) -> np.ndarray:
                 c += 1
 
     pop = state.pop_at(sess.ts)
-    for source, quota in QUOTAS:
+    for source, quota in quotas:
         if len(out) >= n:
             break
         if source == "recent":

@@ -1,0 +1,41 @@
+[21:38:13] actualizando la popularidad diaria con shop.events (para las impresiones del stream)
+[21:38:17] conteos diarios view: 310212 filas
+[21:38:20] conteos diarios add_to_cart: 178194 filas
+[21:38:21] conteos diarios purchase: 139442 filas
+[21:39:40] filas: entrenamiento 870870 (4691 compras), validación 904740 (4911 compras) en 76 s
+[100]	valid_0's binary_logloss: 0.00848926
+[200]	valid_0's binary_logloss: 0.00847221
+[300]	valid_0's binary_logloss: 0.00846802
+[21:40:20] validación (filas mostradas) modelo: {'auc': 0.9010524036947736, 'logloss': 0.00846276335207283, 'mrr_in_shown_model': 0.6536965122029263, 'mrr_in_shown_old_order': 0.5125773549079895}
+[21:40:20] validación (filas mostradas) heurística: {'auc': 0.8383626537611437, 'logloss': 0.2925577037914556, 'mrr_in_shown_model': 0.541237358311274, 'mrr_in_shown_old_order': 0.5125773549079895}
+         feature         gain  gain_pct
+    car_buy_lift 26274.485786 13.264429
+      trans_prod 23722.953278 11.976311
+         conv_7d 19222.311326  9.704204
+       covis_b2b 14711.391686  7.426909
+     content_sim 11610.507680  5.861456
+  car_click_lift 10692.716275  5.398118
+        position  9026.284822  4.556836
+       in_recent  8922.241768  4.504310
+       trans_sub  8451.413018  4.266617
+       covis_buy  7871.846881  3.974028
+     price_ratio  5514.028706  2.783706
+     recent_rank  4874.699914  2.460947
+content_sim_last  4289.160457  2.165343
+        n_recent  3885.673457  1.961646
+      trend_view  3367.458515  1.700030
+[21:40:20] evaluación de la lista completa (candidatos + orden) en días 51-60 ...
+                       todas      cold
+baseline              0.5135    0.5478
+heuristica            0.5168    0.5478
+modelo                0.7668    0.5739
+recall@50             0.8902    0.8174
+recall@100            0.9593    0.9043
+recall@200            0.9890    0.9478
+n_impresiones      4911.0000  115.0000
+heuristica MRR@10     0.2873    0.2058
+modelo MRR@10         0.4475    0.2369
+[21:40:59] impresiones propias con feedback: 19324 (con compra: 251)
+[21:41:13] modelo de validación sobre el feedback propio: {'auc': 0.8257547408054696, 'logloss': 0.009094384724724848, 'mrr_in_shown_model': 0.5787959274015051, 'mrr_in_shown_old_order': 0.5946388840675354}
+[21:41:39] modelo guardado en artifacts/model_c (copia en artifacts/models/v3-trans-fb)
+[21:41:39] listo: v3-trans-fb. Añade una línea a CHANGELOG.md con estas métricas.

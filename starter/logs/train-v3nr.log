@@ -1,0 +1,42 @@
+[04:48:28] actualizando la popularidad diaria con shop.events (para las impresiones del stream)
+[04:48:31] conteos diarios view: 315812 filas
+[04:48:32] conteos diarios add_to_cart: 182809 filas
+[04:48:34] conteos diarios purchase: 143564 filas
+[04:48:47] recompras quitadas de entrenamiento: 1510 de 4691 compras (32.2 %; el simulador evaluado casi no las tiene)
+[04:48:47] recompras quitadas de validación: 1565 de 4911 compras (31.9 %; el simulador evaluado casi no las tiene)
+[04:50:05] filas: entrenamiento 855970 (3181 compras), validación 889218 (3346 compras) en 78 s
+[100]	valid_0's binary_logloss: 0.00644681
+[200]	valid_0's binary_logloss: 0.00643803
+[04:50:47] validación (filas mostradas) modelo: {'auc': 0.8853584339629211, 'logloss': 0.006433499443196862, 'mrr_in_shown_model': 0.6294482158274746, 'mrr_in_shown_old_order': 0.4842812716960907}
+[04:50:48] validación (filas mostradas) heurística: {'auc': 0.8190856886406812, 'logloss': 0.28926179732329893, 'mrr_in_shown_model': 0.5210044687330999, 'mrr_in_shown_old_order': 0.4842812716960907}
+         feature         gain  gain_pct
+       covis_b2b 18711.915526 15.868274
+      trans_prod 16380.178961 13.890890
+    car_buy_lift  7181.653812  6.090261
+     content_sim  7055.461477  5.983246
+        position  6299.295175  5.341994
+     recent_rank  5816.393910  4.932479
+         conv_7d  5454.900371  4.625922
+       covis_buy  4927.377581  4.178566
+  car_click_lift  4193.692877  3.556379
+   car_shown_log  4049.688961  3.434260
+       trans_sub  3960.226704  3.358393
+     price_ratio  3420.263802  2.900488
+content_sim_last  2747.553311  2.330009
+       in_recent  2601.357557  2.206030
+        n_recent  2402.729374  2.037588
+[04:50:48] evaluación de la lista completa (candidatos + orden) en días 51-60 ...
+                       todas      cold
+baseline              0.5135    0.5478
+heuristica            0.5168    0.5478
+modelo                0.7390    0.5652
+recall@50             0.8902    0.8174
+recall@100            0.9593    0.9043
+recall@200            0.9890    0.9478
+n_impresiones      4911.0000  115.0000
+heuristica MRR@10     0.2873    0.2058
+modelo MRR@10         0.3956    0.2081
+[04:51:17] impresiones propias con feedback: 87450 (con compra: 1080)
+[04:52:05] modelo de validación sobre el feedback propio: {'auc': 0.8145655408878001, 'logloss': 0.008596007947619267, 'mrr_in_shown_model': 0.5761482216343328, 'mrr_in_shown_old_order': 0.5870212316513062}
+[04:52:53] modelo guardado en artifacts/model_h (copia en artifacts/models/v3-norebuy)
+[04:52:53] listo: v3-norebuy. Añade una línea a CHANGELOG.md con estas métricas.

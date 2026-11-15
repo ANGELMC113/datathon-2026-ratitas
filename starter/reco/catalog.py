@@ -119,6 +119,16 @@ class ProductTable:
     def __len__(self) -> int:
         return len(self.ids)
 
+    def sub_names(self) -> list[str]:
+        """Código de subcategoría -> nombre (se cachea; la tabla es inmutable)."""
+        names = self.__dict__.get("_sub_names")
+        if names is None or len(names) != len(self.vocab_sub.codes):
+            names = [""] * len(self.vocab_sub.codes)
+            for name, code in self.vocab_sub.codes.items():
+                names[code] = name
+            self.__dict__["_sub_names"] = names
+        return names
+
     @classmethod
     def from_frame(cls, df: pd.DataFrame, emb: np.ndarray | None = None,
                    order: list[str] | None = None) -> "ProductTable":

@@ -193,3 +193,26 @@ FROM shop.history_sessions
 WHERE {_between(since_ms, until_ms)}
   AND (ifNull(CAST(purchased, 'Nullable(String)'), '') != ''
        OR cityHash64(request_id::String) % 1000 < {int(keep_permille)}){lim}"""
+
+
+def purchase_paths(since_ms: int, until_ms: int) -> str:
+    """Impresiones del carrusel antiguo que acabaron en compra: qué había visto el comprador y qué
+    compró. Es exactamente el objetivo que se puntúa (compra en el carrusel tras unas vistas)."""
+    return f"""
+SELECT /* purchase_paths */ {TS_MS} AS ts_ms, recent_views,
+       ifNull(CAST(purchased, 'Nullable(String)'), '') AS purchased
+FROM shop.history_sessions
+WHERE {_between(since_ms, until_ms)}
+  AND ifNull(CAST(purchased, 'Nullable(String)'), '') != ''"""
+
+
+def all_purchases(since_ms: int, until_ms: int) -> str:
+    """Todas las compras (orgánicas y del carrusel) de un rango: para saber qué había comprado ya
+    cada usuario en cada impresión del histórico."""
+    bought = "ifNull(CAST(purchased, 'Nullable(String)'), '')"
+    return f"""
+SELECT /* all_purchases */ user_id::String AS u, product_id::String AS p, {TS_MS} AS t FROM shop.history_events
+WHERE event_type::String = 'purchase' AND {_between(since_ms, until_ms)}
+UNION ALL
+SELECT user_id::String AS u, {bought} AS p, {TS_MS} AS t FROM shop.history_sessions
+WHERE {bought} != '' AND {_between(since_ms, until_ms)}"""

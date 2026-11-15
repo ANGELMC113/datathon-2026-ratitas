@@ -58,6 +58,8 @@ class Settings:
     n_explore: int = 3               # huecos 8-10 para Thompson sampling
     explore_prior: float = 50.0      # peso del score del modelo como prior del bandit
     max_recent: int = 10             # vistas recientes que usamos (las más nuevas)
+    max_per_sub: int = 0             # diversidad: máx. productos por subcategoría (0 = sin límite; div2 perdió en el A/B)
+    old_candidates: bool = False     # True = candidatos sin la fuente de transiciones (opción oldcand)
     recency_decay: float = 0.7       # peso de la vista k-ésima más reciente = decay**k
 
     # --- refresco del estado en vivo (segundos) ---

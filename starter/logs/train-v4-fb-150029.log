@@ -1,0 +1,44 @@
+[00:29:41] actualizando la popularidad diaria con shop.events (para las impresiones del stream)
+[00:29:44] conteos diarios view: 310312 filas
+[00:29:45] conteos diarios add_to_cart: 178337 filas
+[00:29:47] conteos diarios purchase: 139617 filas
+[00:31:03] filas: entrenamiento 870870 (4691 compras), validación 904740 (4911 compras) en 73 s
+[00:31:03] uso los hiperparámetros ajustados de /home/shiqi-liang/Documents/DATATHON 26/datathon-2026-ratitas/starter/artifacts/offline/best_params.json: {'num_leaves': 63, 'min_data_in_leaf': 200, 'learning_rate': 0.05, 'feature_fraction': 1.0, 'lambda_l2': 5.0}
+[100]	valid_0's binary_logloss: 0.00844457
+[200]	valid_0's binary_logloss: 0.00845358
+[00:31:54] validación (filas mostradas) modelo: {'auc': 0.9016879840334637, 'logloss': 0.008442336424550074, 'mrr_in_shown_model': 0.6551379636901934, 'mrr_in_shown_old_order': 0.5125773549079895}
+[00:31:55] validación (filas mostradas) heurística: {'auc': 0.8383626537611437, 'logloss': 0.2925577037914556, 'mrr_in_shown_model': 0.541237358311274, 'mrr_in_shown_old_order': 0.5125773549079895}
+         feature         gain  gain_pct
+    car_buy_lift 32286.640923 17.119948
+       covis_b2b 19602.201791 10.394041
+      trans_prod 18440.290260  9.777939
+         conv_7d 16205.724642  8.593064
+     content_sim 12168.767466  6.452473
+       in_recent 10424.996178  5.527840
+       trans_sub  8814.622344  4.673942
+        position  8374.369637  4.440498
+       covis_buy  6469.639713  3.430518
+     pop_cart_1d  4997.886182  2.650122
+     price_ratio  4427.859043  2.347866
+  car_click_lift  4421.263834  2.344369
+     recent_rank  4390.784787  2.328208
+content_sim_last  3502.415429  1.857151
+        age_days  3268.037468  1.732873
+[00:31:55] evaluación de la lista completa (candidatos + orden) en días 51-60 ...
+                       todas     cold
+baseline              0.5233   0.5806
+heuristica            0.5307   0.5806
+modelo                0.7733   0.5484
+recall@50             0.8980   0.8387
+recall@100            0.9613   0.9032
+recall@200            0.9900   0.9355
+n_impresiones      1500.0000  31.0000
+heuristica MRR@10     0.2993   0.2334
+modelo MRR@10         0.4833   0.1822
+[00:32:20] impresiones propias con feedback: 49939 (con compra: 645)
+[00:32:27] feedback: 39202 impresiones para entrenar, 10737 reservadas (últimos 60 min, 144 compras) para comparar
+[00:32:53] modelo de validación sobre el feedback propio: {'auc': 0.8304476052709163, 'logloss': 0.008798160639300674, 'mrr_in_shown_model': 0.5963430282292557, 'mrr_in_shown_old_order': 0.6132220029830933}
+[00:33:40] reservado · nuevo v4-fb-150029: {'auc': 0.8360573630048267, 'logloss': 0.009044478910628312, 'mrr_in_shown_model': 0.6336833112874779, 'mrr_in_shown_old_order': 0.6444169282913208}
+[00:33:40] reservado · desplegado v3-trans-fb: {'auc': 0.8476171888762468, 'logloss': 0.00908217354316281, 'mrr_in_shown_model': 0.6581101190476191, 'mrr_in_shown_old_order': 0.6444169282913208}
+[00:33:40] modelo guardado en /home/shiqi-liang/Documents/DATATHON 26/datathon-2026-ratitas/starter/artifacts/candidate_model_c (copia en /home/shiqi-liang/Documents/DATATHON 26/datathon-2026-ratitas/starter/artifacts/models/v4-fb-150029)
+[00:33:40] listo: v4-fb-150029. Añade una línea a CHANGELOG.md con estas métricas.

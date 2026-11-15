@@ -62,9 +62,72 @@ def download_daily(client: RawTreeClient, product_ids: list[str],
     return DailyPop.from_frames(frames, product_ids)
 
 
+def download_purchase_paths(client: RawTreeClient, since_ms: int, until_ms: int,
+                            chunk_ms: int = 10 * DAY_MS) -> pd.DataFrame:
+    parts = []
+    t = since_ms
+    while t < until_ms:
+        parts.append(client.query_df(sql.purchase_paths(t, min(t + chunk_ms, until_ms)), timeout=600))
+        t += chunk_ms
+    df = pd.concat([p for p in parts if not p.empty], ignore_index=True) if parts else pd.DataFrame()
+    if not df.empty:
+        df["ts_ms"] = pd.to_numeric(df["ts_ms"], errors="coerce")
+    log(f"recorridos vista -> compra del carrusel: {len(df)}")
+    return df
+
+
+def build_transitions(paths: pd.DataFrame | None, until_ms: int, index: dict[str, int], n: int,
+                      sub_of: dict[str, str], top_k: int = 50, decay: float = 0.7,
+                      max_recent: int = 10, prior: float = 2.0) -> tuple[Neighbors, dict]:
+    """Tasa con la que, tras ver X, se compró Y en el carrusel (por producto y por subcategoría).
+
+    Cada vista pesa decay**k (la más reciente, más). La tasa = peso hacia Y / (peso total de X +
+    prior): con pocos datos tiende a 0. Por subcategoría generaliza a productos nuevos."""
+    from collections import defaultdict
+
+    from .session import recent_views
+    if paths is None or paths.empty:
+        return Neighbors.empty(n), {}
+    d = paths[paths["ts_ms"] < until_ms]
+    pp: dict[tuple[str, str], float] = defaultdict(float)
+    ptot: dict[str, float] = defaultdict(float)
+    ss: dict[tuple[str, str], float] = defaultdict(float)
+    stot: dict[str, float] = defaultdict(float)
+    for rv, bought in zip(d["recent_views"], d["purchased"]):
+        bought = str(bought)
+        views = recent_views({"recent_views": rv})
+        if views and all(t == t for _, t in views):
+            views = sorted(views, key=lambda x: x[1], reverse=True)
+        else:
+            views = views[::-1]
+        seen: list[str] = []
+        for pid, _ in views:
+            if pid not in seen:
+                seen.append(pid)
+            if len(seen) == max_recent:
+                break
+        sb = sub_of.get(bought)
+        for k, pid in enumerate(seen):
+            w = decay ** k
+            ptot[pid] += w
+            if pid != bought:
+                pp[(pid, bought)] += w
+            sv = sub_of.get(pid)
+            if sv is not None and sb is not None:
+                stot[sv] += w
+                ss[(sv, sb)] += w
+    rows = [{"p": a, "q": b, "n": v / (ptot[a] + prior)} for (a, b), v in pp.items()]
+    prod = Neighbors.from_frame(pd.DataFrame(rows), index, n, top_k, normalize=False) if rows else Neighbors.empty(n)
+    sub: dict[str, dict[str, float]] = defaultdict(dict)
+    for (a, b), v in ss.items():
+        sub[a][b] = v / (stot[a] + prior)
+    return prod, dict(sub)
+
+
 def build_artifacts(client: RawTreeClient, product_ids: list[str], content: ContentModel | None,
                     emb: np.ndarray, until_ms: int, since_ms: int = 0, top_k: int = 40,
-                    knn_k: int = 30) -> Artifacts:
+                    knn_k: int = 30, paths: pd.DataFrame | None = None,
+                    sub_of: dict[str, str] | None = None) -> Artifacts:
     """Todo lo que se puede precalcular con el histórico anterior a `until_ms`."""
     n = len(product_ids)
     index = {p: i for i, p in enumerate(product_ids)}
@@ -91,11 +154,15 @@ def build_artifacts(client: RawTreeClient, product_ids: list[str], content: Cont
         if p in index:
             buy_all[index[p]] = c
     nb_idx, nb_sim = knn(emb, knn_k)
+    trans_prod, trans_sub = build_transitions(paths, until_ms, index, n, sub_of or {})
+    log(f"  transiciones vista -> compra: {len(trans_prod.indices)} pares de producto, "
+        f"{sum(len(v) for v in trans_sub.values())} de subcategoría")
     return Artifacts(product_ids=list(product_ids), until_ms=int(until_ms), covis=covis,
                      content_knn=Neighbors.from_dense(nb_idx, np.maximum(nb_sim, 0)), carousel=car,
                      content=content, emb=emb.astype(np.float32), buy_all=buy_all,
                      best_sellers=[p for _, p in ranked],
-                     meta={"since_ms": int(since_ms), "built_at": time.time()})
+                     meta={"since_ms": int(since_ms), "built_at": time.time()},
+                     trans_prod=trans_prod, trans_sub=trans_sub)
 
 
 def download_impressions(client: RawTreeClient, since_ms: int, until_ms: int, keep_permille: int,
@@ -113,6 +180,50 @@ def download_impressions(client: RawTreeClient, since_ms: int, until_ms: int, ke
             df[c] = df[c].fillna("").astype(str)
     log(f"impresiones [{since_ms}, {until_ms}): {len(df)} (con compra: {int((df.get('purchased', pd.Series(dtype=str)) != '').sum())})")
     return df
+
+
+REBUY_MEMORY_MS = 7 * DAY_MS     # igual que la memoria de compras del servicio (PURCHASE_MEMORY_S)
+REBUY_GAP_MS = 60_000            # la compra previa debe ser al menos 1 min anterior a la impresión
+
+
+def download_purchases(client: RawTreeClient, since_ms: int, until_ms: int,
+                       chunk_ms: int = 7 * DAY_MS) -> pd.DataFrame:
+    parts, t = [], since_ms
+    while t < until_ms:
+        parts.append(client.query_df(sql.all_purchases(t, min(t + chunk_ms, until_ms)), timeout=600))
+        t += chunk_ms
+    df = pd.concat([p for p in parts if not p.empty], ignore_index=True) if parts else pd.DataFrame()
+    if df.empty or not {"u", "p", "t"} <= set(df.columns):
+        return pd.DataFrame({"u": [], "p": [], "t": []})
+    df["t"] = pd.to_numeric(df["t"], errors="coerce")
+    df = df[(df["u"] != "") & df["t"].notna()]
+    log(f"compras para marcar recompras: {len(df)}")
+    return df
+
+
+def mark_prev_bought(imps: pd.DataFrame, purchases: pd.DataFrame) -> pd.DataFrame:
+    """Añade a cada impresión `prev_bought`: lo que el usuario ya había comprado en los 7 días previos.
+
+    En la evaluación, quien ya compró algo casi nunca lo vuelve a comprar (regla del simulador), pero el
+    histórico se generó sin esa regla: ~1/3 de sus compras en el carrusel son recompras. El servicio
+    nunca muestra lo ya comprado, así que esas filas se quitan del entrenamiento (entrenar como se sirve)."""
+    by_user: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    if len(purchases):
+        purchases = purchases.sort_values("t")
+        for u, g in purchases.groupby("u", sort=False):
+            by_user[str(u)] = (g["p"].astype(str).to_numpy(), g["t"].to_numpy(dtype=float))
+    out = []
+    for u, ts in zip(imps["user_id"].astype(str), imps["ts_ms"].to_numpy(dtype=float)):
+        hit = by_user.get(u)
+        if hit is None or np.isnan(ts):
+            out.append(frozenset())
+            continue
+        ps, tt = hit
+        lo, hi = np.searchsorted(tt, ts - REBUY_MEMORY_MS), np.searchsorted(tt, ts - REBUY_GAP_MS)
+        out.append(frozenset(ps[lo:hi]))
+    imps = imps.copy()
+    imps["prev_bought"] = out
+    return imps
 
 
 def feedback_impressions(client: RawTreeClient, team: str, logs_dir: Path) -> pd.DataFrame:
@@ -164,9 +275,10 @@ def impressions_to_rows(state: State, imps: pd.DataFrame, neg_weight: float, max
         req = r._asdict()
         shown = list(req["shown"]) if req["shown"] is not None else []
         idx, pos = [], []
+        prev = req.get("prev_bought") or ()
         for k, pid in enumerate(shown[:10]):
             i = products.index.get(str(pid))
-            if i is not None:
+            if i is not None and str(pid) not in prev:      # lo ya comprado no se sirve: fuera
                 idx.append(i)
                 pos.append(k)
         if not idx:

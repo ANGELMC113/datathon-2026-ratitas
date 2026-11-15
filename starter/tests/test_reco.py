@@ -306,6 +306,22 @@ def test_live_purchases_are_excluded(world):
     assert not set(first) & set(second)
 
 
+def test_rebuy_option_keeps_bought(world):
+    """La variante rebuy no excluye lo ya comprado; la normal sí."""
+    import serve_v2
+    a = serve_v2.parse_arm("artifacts/model_e:rebuy", 0.25)
+    assert a.rebuy and a.suffix() == "+rebuy"
+    server, client, state = make_server(world)
+    req = live_requests(world, 1)[0]
+    first = server.rec.recommend(req, explore=False).items
+    state._user_bought[req["user_id"]] = {p: time.time() for p in first}
+    normal = server.rec.recommend(req, explore=False).items
+    rebuy = server.rec.recommend(req, explore=False, rebuy=True).items
+    assert not set(first) & set(normal)
+    assert rebuy == first                       # sin la regla, el orden vuelve a ser el mismo
+    assert is_valid(rebuy, state)
+
+
 def test_latency_per_request(world):
     """5.000 productos como en el reto: el cálculo por petición debe ser de milisegundos."""
     catalog = make_catalog(5000, seed=3)
@@ -455,9 +471,245 @@ def test_train_with_feedback_holdout(world, tmp_path, monkeypatch):
                        "clicked": bought, "purchased": bought})
     fake.feedback = fb
     train.main(["--with-feedback", "--holdout-minutes", "30", "--backend", "sklearn", "--version", "v3",
-                "--model-dir", str(tmp_path / "cand")])
+                "--model-dir", str(tmp_path / "cand"), "--feedback-half-life", "0.5"])
     meta = _json.loads((tmp_path / "cand" / "model.json").read_text())
     hold = meta["metrics"]["holdout"]
     assert hold["current_version"] == "v2" and hold["n_buys"] > 0
     assert "logloss" in hold["candidate"] and "logloss" in hold["current"]
     assert _json.loads((tmp_path / "model" / "model.json").read_text())["version"] == "v2"   # no se tocó
+
+
+def test_transitions_view_to_purchase(world):
+    from reco.offline import build_transitions
+    cat = world["catalog"]
+    ids = cat["product_id"].tolist()
+    index = {p: i for i, p in enumerate(ids)}
+    sub_of = dict(zip(cat["product_id"], cat["subcategory"]))
+    a, b, c = ids[0], ids[1], ids[2]
+    paths = pd.DataFrame({"ts_ms": [1, 2, 3, 10 ** 15],
+                          "recent_views": [[{"product_id": a, "ts": "2026-01-01 00:00:01"}]] * 3
+                          + [[{"product_id": a, "ts": "2026-01-01 00:00:01"}]],
+                          "purchased": [b, b, c, c]})
+    prod, sub = build_transitions(paths, until_ms=100, index=index, n=len(ids), sub_of=sub_of, prior=2.0)
+    q, w = prod.get(index[a])
+    got = dict(zip(q.tolist(), w.tolist()))
+    assert got[index[b]] == pytest.approx(2 / 5) and got[index[c]] == pytest.approx(1 / 5)   # la última es futuro
+    assert sub[sub_of[a]][sub_of[b]] > 0
+
+
+def test_old_model_with_fewer_features_still_loads(world, tmp_path):
+    """Un modelo entrenado antes de añadir features nuevas sigue funcionando (columnas por nombre)."""
+    import json as _json
+    import train
+    from reco.features import F, FEATURE_NAMES
+    st = offline_state(world["products"], world["art"], world["daily"])
+    rows = impressions_to_rows(st, world["imps"].iloc[:1500], 1.0)
+    old = [f for f in FEATURE_NAMES if not f.startswith("trans_")]
+    cols = [F[f] for f in old]
+    model, _ = train.fit("sklearn", rows["X"][:, cols], rows["y"], rows["w"], rounds=20)
+    train.save_model("sklearn", model, "v-old", {}, tmp_path / "model")
+    meta = tmp_path / "model" / "model.json"
+    m = _json.loads(meta.read_text()); m["features"] = old; meta.write_text(_json.dumps(m))
+    sc = load_scorer(tmp_path / "model")
+    assert sc.kind == "sklearn" and sc.predict(rows["X"][:7]).shape == (7,)
+
+
+def test_ab_split(world, tmp_path):
+    import serve_v2
+    frac = np.mean([serve_v2.pick_arm(f"r_{k}", [0.5]) == 0 for k in range(4000)])
+    assert 0.45 < frac < 0.55 and serve_v2.pick_arm("r_x", [0.5]) == serve_v2.pick_arm("r_x", [0.5])
+
+    class Fixed(Scorer):
+        def __init__(self, v): self.version, self.kind = v, "fixed"
+        def predict(self, X): return np.linspace(0.1, 0.0, len(X))
+
+    class W:                                       # ModelWatcher de mentira
+        def __init__(self, sc): self.scorer = sc
+    server, client, state = make_server(world)
+    server.watcher, server.arms = W(Fixed("vA")), [serve_v2.Arm(W(Fixed("vB")), 0.5)]
+    client.requests = live_requests(world, 60)
+    out = server.answer(server.pull())
+    versions = [a["model_version"] for a, _, _ in out]
+    assert 15 < versions.count("vB") < 45 and versions.count("vA") + versions.count("vB") == 60
+    for a, _, _ in out:
+        assert a["model_version"] == ("vB" if serve_v2.pick_arm(a["request_id"], [0.5]) == 0 else "vA")
+
+
+def test_multi_arm_split(world):
+    import serve_v2
+
+    class Fixed(Scorer):
+        def __init__(self, v): self.version, self.kind = v, "fixed"
+        def predict(self, X): return np.linspace(0.1, 0.0, len(X))
+
+    class W:
+        def __init__(self, sc): self.scorer = sc
+    server, client, state = make_server(world)
+    server.watcher = W(Fixed("vA"))
+    server.arms = [serve_v2.Arm(W(Fixed("vB")), 0.25), serve_v2.Arm(W(Fixed("vC")), 0.25),
+                   serve_v2.Arm(W(HeuristicScorer()), 0.25)]
+    client.requests = live_requests(world, 400)
+    versions = [a["model_version"] for a, _, _ in server.answer(server.pull())]
+    n = {v: versions.count(v) for v in set(versions)}
+    # el brazo sin modelo (heurística) no se usa: su parte va a A
+    assert set(n) == {"vA", "vB", "vC"} and 70 < n["vB"] < 130 and 70 < n["vC"] < 130 and n["vA"] > 150
+
+
+def test_diversity_caps_subcategories(world):
+    st = live_like_state(world)
+    pt = st.products
+    sub0 = int(pt.sub[np.flatnonzero(pt.available)[0]])
+    same = [i for i in np.flatnonzero(pt.available) if pt.sub[i] == sub0][:8]
+    other = [i for i in np.flatnonzero(pt.available) if pt.sub[i] != sub0][:20]
+    ranked = np.array(same + other)
+    scores = np.linspace(1, 0, len(ranked))
+    sess = make_session(st, a_request(world, 0))
+    out = rerank_idx(st, ranked, scores, sess, None, max_per_sub=2)
+    assert sum(pt.sub[i] == sub0 for i in out) == 2 and out[:2] == same[:2]
+    assert is_valid([pt.ids[i] for i in out], st)
+    tiny = rerank_idx(st, np.array(same), np.linspace(1, 0, len(same)), sess, None, max_per_sub=2)
+    assert len(tiny) == 10                     # si no hay variedad, se rellena igualmente
+
+
+def test_arms_with_same_model_and_options(world):
+    import serve_v2
+
+    class Fixed(Scorer):
+        def __init__(self, v): self.version, self.kind = v, "fixed"
+        def predict(self, X): return np.linspace(0.1, 0.0, len(X))
+
+    class W:
+        def __init__(self, sc): self.scorer = sc
+    a = serve_v2.parse_arm("artifacts/model:div=2,noexp", 0.3)
+    assert a.max_per_sub == 2 and a.n_explore == 0 and a.suffix() == "+div2+noexp"
+    server, client, state = make_server(world)
+    main = W(Fixed("v2"))
+    server.watcher = main
+    server.arms = [serve_v2.Arm(main, 0.33, None, 2), serve_v2.Arm(main, 0.33, 0, 2)]
+    client.requests = live_requests(world, 300)
+    out = server.answer(server.pull())
+    versions = {a["model_version"] for a, _, _ in out}
+    assert versions == {"v2", "v2+div2", "v2+div2+noexp"}
+    for ans, _, _ in out:
+        if "+div2" in ans["model_version"]:
+            subs = [state.products.sub[state.products.index[p]] for p in ans["items"]]
+            assert max(np.bincount(subs)) <= 2 or len(set(subs)) < 5
+
+
+def test_old_candidates_option(world):
+    import serve_v2
+    from reco.candidates import QUOTAS_OLD
+    assert all(src != "trans" for src, _ in QUOTAS_OLD)
+    a = serve_v2.parse_arm("artifacts/model_c:oldcand", 0.25)
+    assert a.old_candidates and a.suffix() == "+oldcand"
+
+    class Fixed(Scorer):
+        def __init__(self, v): self.version, self.kind = v, "fixed"
+        def predict(self, X): return np.linspace(0.1, 0.0, len(X))
+
+    class W:
+        def __init__(self, sc): self.scorer = sc
+    server, client, state = make_server(world)
+    main = W(Fixed("v2"))
+    server.watcher = main
+    server.arms = [serve_v2.Arm(main, 0.5, old_candidates=True)]
+    client.requests = live_requests(world, 120)
+    out = server.answer(server.pull())
+    assert {x["model_version"] for x, _, _ in out} == {"v2", "v2+oldcand"}
+    assert all(is_valid(x["items"], state) for x, _, _ in out)
+
+
+def test_hyperparameter_tuning(world, tmp_path, monkeypatch):
+    import train
+    monkeypatch.setattr(train, "OFFLINE", tmp_path)
+    st = offline_state(world["products"], world["art"], world["daily"])
+    ra = impressions_to_rows(st, world["imps"].iloc[:3000], 1.0)
+    rb = impressions_to_rows(st, world["imps"].iloc[3000:4500], 1.0)
+    params = train.sample_params(3)
+    assert params[0] == {k: train.LGB_PARAMS[k] for k in train.SEARCH_SPACE}   # el primero = por defecto
+    best = train.tune("sklearn", ra, rb, 3)
+    assert set(best) == set(train.SEARCH_SPACE) and (tmp_path / "best_params.json").exists()
+    assert train.load_best_params() == best
+    model, _ = train.fit("sklearn", ra["X"], ra["y"], ra["w"], rounds=20, params=best)
+    assert train.predict("sklearn", model, rb["X"][:3]).shape == (3,)
+
+
+def test_ab_report_parsing():
+    import ab_report
+    state = {"baseline": {"conversion": 0.5}, "reference": {"conversion": 2.0},
+             "teams": [{"team_id": "team_06", "conversion": 2.2, "versions": []},
+                       {"team_id": "team_30", "conversion": 1.2, "on_time": 99.9, "versions": [
+                           {"model_version": "v2", "requests": 900, "conversion": 1.0, "cold_conversion": 1.5},
+                           {"model_version": "v3", "requests": 900, "conversion": 1.5, "cold_conversion": 2.0}]}]}
+    df, info = ab_report.window_table(state, "team_30")
+    assert info["rank"] == 2 and info["leader"] == "team_06"
+    assert df.set_index("model_version").loc["v3", "x_baseline"] == pytest.approx(3.0)
+
+
+def test_catalog_refresh_applies_each_change_once(world):
+    server, client, state = make_server(world)
+    pid = state.products.ids[0]
+    base = world["catalog"].set_index("product_id").loc[pid].to_dict()
+    client.updates = [{**base, "product_id": pid, "change": "out_of_stock", "is_active": False, "ts_ms": "5000"}]
+    state.refresh_catalog()
+    t1 = state.products
+    assert not t1.available[t1.index[pid]]
+    state.refresh_catalog()                        # mismos cambios: no se reaplican (misma tabla)
+    assert state.products is t1
+    client.updates.append({**base, "product_id": pid, "change": "back_in_stock", "is_active": True, "ts_ms": "5000"})
+    state.refresh_catalog()                        # nuevo cambio en el mismo milisegundo: sí se aplica
+    assert state.products.available[state.products.index[pid]]
+
+
+def test_rebuys_are_dropped_from_training(world):
+    """Lo que el usuario ya compró no se sirve, así que tampoco se entrena con ello."""
+    from reco.offline import mark_prev_bought
+    imps = world["imps"].iloc[:200].copy()
+    first = imps.iloc[0]
+    target = str(list(first["shown"])[0])
+    purchases = pd.DataFrame({"u": [str(first["user_id"]), str(first["user_id"])],
+                              "p": [target, "otro"],
+                              "t": [first["ts_ms"] - 3_600_000, first["ts_ms"] + 3_600_000]})  # antes / después
+    marked = mark_prev_bought(imps, purchases)
+    assert marked.iloc[0]["prev_bought"] == frozenset({target})     # la posterior no cuenta (sin fuga)
+    st = offline_state(world["products"], world["art"], world["daily"])
+    full = impressions_to_rows(st, imps.iloc[:1], 1.0)
+    clean = impressions_to_rows(st, marked.iloc[:1], 1.0)
+    assert len(clean["y"]) == len(full["y"]) - 1
+
+
+def test_lift_stats_learns_residual():
+    """Un producto que se vende más de lo que el modelo esperaba sube; sin datos, lift = 1."""
+    from reco.state import LiftStats
+    lift = LiftStats(alpha=3.0)
+    assert list(lift.lookup(["a", "b"])) == [1.0, 1.0]
+    for k in range(200):
+        shown = ["hot", "cold"] + [f"x{j}" for j in range(8)]
+        preds = {p: 0.01 for p in shown}
+        lift.update(shown, preds, "hot" if k % 10 == 0 else "")      # hot: 20 compras, esperadas 2
+    hot, cold, unknown = lift.lookup(["hot", "cold", "nunca"])
+    assert hot > 2.0 and cold < 1.0 and unknown == 1.0
+    lift.decay(0.5)
+    assert lift.lookup(["hot"])[0] > 1.0
+
+
+def test_adapt_option_reorders_and_learns(world):
+    import serve_v2
+    a = serve_v2.parse_arm("artifacts/model_f:adapt", 0.5)
+    assert a.adapt and a.suffix() == "+adapt"
+    server, client, state = make_server(world)
+    req = live_requests(world, 1)[0]
+    base = server.rec.recommend(req, explore=False)
+    assert base.raw and set(base.raw) <= set(base.items)
+    # el último de la lista se vende muchísimo en vivo: con adapt debe subir
+    target = base.items[-1]
+    for _ in range(300):
+        state.lift.update([target], {target: 0.001}, target)
+    adapted = server.rec.recommend(req, explore=False, adapt=True).items
+    assert adapted.index(target) < base.items.index(target)
+    assert server.rec.recommend(req, explore=False).items == base.items   # sin adapt no cambia
+    # el servicio guarda las predicciones y el feedback las convierte en lift
+    client.requests = live_requests(world, 30)
+    out = server.answer(server.pull())
+    rid = out[0][0]["request_id"]
+    assert rid in state._request_preds
