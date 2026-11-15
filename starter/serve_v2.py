@@ -15,195 +15,38 @@ Garantías:
 from __future__ import annotations
 
 import argparse
-import json
-import queue
 import sys
-import threading
 import time
 import traceback
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
-from concurrent.futures import TimeoutError as FuturesTimeout
-from collections import Counter
-from datetime import datetime, timezone
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-
-import numpy as np
 
 from reco import config, sql
 from reco.artifacts import Artifacts
 from reco.client import RawTreeClient
 from reco.live import LiveState
 from reco.model import ModelWatcher
+from reco.candidates import QUOTAS_OLD
 from reco.recommender import Recommender, is_valid, repair
+from reco.serving import Arm, Pusher, ServeLog, Stats, bucket, parse_arm, pick_arm  # noqa: F401
 from reco.session import request_ts
 from reco.timeutil import to_float
 
 
-# ----------------------------------------------------------------------------------------------
-class Stats:
-    def __init__(self, every: float = 30.0) -> None:
-        self.lock = threading.Lock()
-        self.every = every
-        self.last = time.time()
-        self.c: Counter = Counter()
-        self.compute_ms: list[float] = []
-        self.age_ms: list[float] = []
-
-    def add(self, key: str, n: int = 1) -> None:
-        with self.lock:
-            self.c[key] += n
-
-    def sample(self, compute_ms: float | None = None, age_ms: float | None = None) -> None:
-        with self.lock:
-            if compute_ms is not None:
-                self.compute_ms.append(compute_ms)
-            if age_ms is not None:
-                self.age_ms.append(age_ms)
-
-    def maybe_print(self, extra: str = "") -> None:
-        if time.time() - self.last < self.every:
-            return
-        with self.lock:
-            c, cm, am = self.c, self.compute_ms, self.age_ms
-            self.c, self.compute_ms, self.age_ms = Counter(), [], []
-            self.last = time.time()
-
-        def pct(a: list[float], q: float) -> str:
-            return f"{np.percentile(a, q):.0f}" if a else "-"
-
-        print(f"[serve {datetime.now():%H:%M:%S}] respondidas={c['answered']} modelo={c['model']} "
-              f"fallback={c['fallback']} ({', '.join(f'{k[3:]}={v}' for k, v in c.items() if k.startswith('fb_')) or '-'}) "
-              f"viejas={c['dropped']} insertadas={c['pushed']} fallo_insert={c['push_failed']} "
-              f"respaldos={c['hedged']} lecturas_fallidas={c['pull_failed']} "
-              f"cálculo p50/p95={pct(cm, 50)}/{pct(cm, 95)} ms  edad al insertar p50/p95={pct(am, 50)}/{pct(am, 95)} ms"
-              f"{extra}", flush=True)
-
-
-class ServeLog:
-    """Una línea JSON por respuesta: permite reentrenar con el feedback (train.py --with-feedback)
-    y analizar el cold start, porque el feedback no trae la petición original."""
-
-    def __init__(self, directory: Path) -> None:
-        directory.mkdir(parents=True, exist_ok=True)
-        self.directory = directory
-        self._day = ""
-        self._f = None
-
-    def write(self, record: dict) -> None:
-        day = datetime.now(timezone.utc).strftime("%Y%m%d")
-        if day != self._day or self._f is None:
-            if self._f:
-                self._f.close()
-            self._f = open(self.directory / f"served-{day}.jsonl", "a", buffering=1 << 16)
-            self._day = day
-        self._f.write(json.dumps(record, default=str, separators=(",", ":")) + "\n")
-
-    def flush(self) -> None:
-        if self._f:
-            self._f.flush()
-
-
-class Pusher(threading.Thread):
-    """Inserta lotes en team_NN.submissions sin que un lote lento bloquee a los demás.
-
-    - Cada lote se inserta en su propio hilo (varios a la vez).
-    - Inserción con respaldo: si RawTree no responde en `hedge_after` s, se envía una copia idéntica
-      por otra conexión y vale la primera que conteste. Una copia repetida no hace daño: la
-      organización cuenta una sola respuesta por petición y las dos son iguales.
-    - Tras un fallo solo se reintentan las respuestas que aún pueden llegar a tiempo.
-    """
-
-    def __init__(self, client: RawTreeClient, state: LiveState, stats: Stats, timeout: float,
-                 dry_run: bool, hedge_after: float = 0.6, workers: int = 8) -> None:
-        super().__init__(name="pusher", daemon=True)
-        self.client, self.state, self.stats = client, state, stats
-        self.timeout, self.dry_run, self.hedge_after = timeout, dry_run, hedge_after
-        self.q: queue.Queue = queue.Queue()
-        # dos grupos de hilos: uno por lote y otro para las llamadas HTTP (si compartieran grupo, los
-        # lotes podrían ocupar todos los hilos esperando inserciones que nunca llegan a ejecutarse)
-        self.batches = ThreadPoolExecutor(max_workers=4, thread_name_prefix="push-batch")
-        self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="push-http")
-
-    def submit(self, items: list[tuple[dict, float, float]]) -> None:
-        """items: (respuesta, plazo en reloj local, ts de la petición en reloj del servidor)."""
-        self.q.put(items)
-
-    def run(self) -> None:
-        while True:
-            batch = list(self.q.get())
-            while True:                                   # junta todo lo que esté en cola
-                try:
-                    batch += self.q.get_nowait()
-                except queue.Empty:
-                    break
-            self.batches.submit(self._push_safe, batch)
-
-    def _push_safe(self, batch: list[tuple[dict, float, float]]) -> None:
-        try:
-            self._push(batch)
-        except Exception:                                 # un hilo de inserción no puede tirar nada
-            traceback.print_exc()
-
-    def _insert(self, rows: list[dict]) -> None:
-        """Una inserción con copia de respaldo si la primera tarda."""
-        if self.dry_run:
-            return
-        first = self.pool.submit(self.client.insert, "submissions", rows, timeout=self.timeout, retries=0)
-        done, _ = wait([first], timeout=self.hedge_after)
-        if done:
-            first.result()                                # propaga el error si falló
-            return
-        self.stats.add("hedged")
-        second = self.pool.submit(self.client.insert, "submissions", rows, timeout=self.timeout, retries=0)
-        last: BaseException | None = None
-        try:
-            for f in as_completed([first, second], timeout=self.timeout + 0.2):
-                try:
-                    f.result()
-                    return                                # la primera que llegue vale
-                except Exception as exc:
-                    last = exc
-        except FuturesTimeout as exc:
-            last = exc
-        raise last if last is not None else RuntimeError("inserción sin respuesta")
-
-    def _push(self, batch: list[tuple[dict, float, float]]) -> None:
-        attempt = 0
-        while batch:
-            if attempt > 0:
-                # en los reintentos solo las que aún pueden llegar (1 s de margen por si el reloj miente)
-                now = time.time()
-                batch = [b for b in batch if b[1] + 1.0 > now]
-                if not batch:
-                    self.stats.add("push_late")
-                    return
-            try:
-                self._insert([b[0] for b in batch])
-            except Exception as exc:
-                attempt += 1
-                print(f"[push] intento {attempt} falló ({len(batch)} respuestas): {str(exc)[:160]}", flush=True)
-                if attempt >= 4:
-                    self.stats.add("push_failed", len(batch))
-                    return
-                time.sleep(0.05 * attempt)
-                continue
-            done = self.state.now_server()
-            self.stats.add("pushed", len(batch))
-            for _, _, req_ts in batch:
-                self.stats.sample(age_ms=(done - req_ts) * 1000.0)
-            return
-
-
-# ----------------------------------------------------------------------------------------------
 class Server:
     def __init__(self, client: RawTreeClient, state: LiveState, recommender: Recommender,
                  watcher: ModelWatcher | None, settings: config.Settings, *, dry_run: bool = False,
-                 log: ServeLog | None = None) -> None:
+                 log: ServeLog | None = None, arms: list[Arm] | None = None) -> None:
         self.client, self.state, self.rec, self.watcher = client, state, recommender, watcher
+        # test A/B/n: cada variante extra recibe una fracción fija de peticiones (por hash del
+        # request_id); el resto va al modelo principal
+        self.arms: list[Arm] = list(arms or [])
         self.s = settings
         self.stats = Stats()
         self.log = log
         self.seen: dict[str, float] = {}
+        self.main_suffix = ""                     # opciones del modelo principal en model_version
+        self.main_adapt = False                   # el modelo principal usa el lift del feedback
         self.pusher = Pusher(client, state, self.stats, settings.push_timeout_s, dry_run,
                              hedge_after=settings.hedge_after_s)
         self._pull_failures = 0
@@ -254,7 +97,14 @@ class Server:
     def answer(self, reqs: list[dict]) -> list[tuple[dict, float, float]]:
         if self.watcher is not None:
             self.rec.scorer = self.watcher.scorer
-        version = self.rec.scorer.version
+        scorer_a = self.rec.scorer
+        # un brazo sin modelo cargado (heurística), o que sería idéntico a A, no se usa: va a A
+        arm_scorers = []
+        for arm in self.arms:
+            sc = arm.watcher.scorer
+            same_as_a = sc.version == scorer_a.version and arm.suffix() == self.main_suffix
+            arm_scorers.append(sc if sc.kind != "heuristic" and not same_as_a else None)
+        fractions = [a.fraction for a in self.arms]
         start = time.perf_counter()
         out: list[tuple[dict, float, float]] = []
         for r in reqs:
@@ -264,15 +114,26 @@ class Server:
             if t_req != t_req:
                 t_req = self.state.now_server()
             t0 = time.perf_counter()
+            k = pick_arm(rid, fractions) if self.arms else -1
+            arm = self.arms[k] if k >= 0 and arm_scorers[k] is not None else None
+            scorer = arm_scorers[k] if arm is not None else scorer_a
+            version = scorer.version + (arm.suffix() if arm is not None else self.main_suffix)
             items, source, cold = None, "model", False
             if t0 - start > self.s.batch_budget_s:
                 source = "fb_budget"
             else:
                 try:
-                    rec = self.rec.recommend(r)
+                    rec = self.rec.recommend(r, scorer=scorer,
+                                             n_explore=arm.n_explore if arm is not None else None,
+                                             max_per_sub=arm.max_per_sub if arm is not None else None,
+                                             quotas=(QUOTAS_OLD if arm.old_candidates else None)
+                                             if arm is not None else None,
+                                             rebuy=arm is not None and arm.rebuy,
+                                             adapt=(arm.adapt if arm is not None else self.main_adapt))
                     items, cold = rec.items, rec.cold
                     if not is_valid(items, self.state, self.s.n_items):
-                        items = repair(items, self.state, self.s.n_items, exclude=self.state.bought(user))
+                        exclude = set() if arm is not None and arm.rebuy else self.state.bought(user)
+                        items = repair(items, self.state, self.s.n_items, exclude=exclude)
                         self.stats.add("repaired")
                         if not is_valid(items, self.state, self.s.n_items):
                             source = "fb_invalid"
@@ -290,9 +151,12 @@ class Server:
                 self.stats.add(source)
             else:
                 self.stats.add("model")
+                self.state.remember_preds(rid, {p: rec.raw[p] for p in items if p in rec.raw})
             compute_ms = (time.perf_counter() - t0) * 1000.0
             self.stats.sample(compute_ms=compute_ms)
             self.stats.add("answered")
+            if self.arms:
+                self.stats.add(f"arm:{version}")
             self.state.remember_request(rid, user)
             answer = {"request_id": rid, "items": items, "model_version": version}
             deadline_local = t_req + self.s.deadline_s - self.state.clock_offset
@@ -396,9 +260,25 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--model-dir", type=Path, default=config.MODEL_DIR)
     ap.add_argument("--no-explore", action="store_true", help="desactiva Thompson sampling")
     ap.add_argument("--max-seconds", type=float, default=None)
+    ap.add_argument("--ab-model-dir", nargs="+", default=None,
+                    help="variantes extra a probar a la vez: CARPETA[:opciones], p. ej. artifacts/model_b "
+                         "'artifacts/model:div=2' 'artifacts/model:div=2,noexp' (div=N: máx. N por "
+                         "subcategoría; noexp: sin exploración). Cada modelo se recarga en caliente")
+    ap.add_argument("--old-candidates", action="store_true", default=None,
+                    help="modelo principal con la búsqueda de candidatos sin transiciones (la de antes de las 21:43)")
+    ap.add_argument("--max-per-sub", type=int, default=None,
+                    help="diversidad del modelo principal: máx. N productos por subcategoría (0 = sin límite)")
+    ap.add_argument("--adapt", action="store_true",
+                    help="modelo principal con el lift aprendido del feedback en vivo (LiftStats)")
+    ap.add_argument("--ab-fraction", type=float, default=None,
+                    help="fracción de peticiones para CADA modelo extra (por defecto, reparto a partes iguales)")
     args = ap.parse_args(argv)
 
     s = config.settings()
+    if args.max_per_sub is None:
+        args.max_per_sub = s.max_per_sub
+    if args.old_candidates is None:
+        args.old_candidates = s.old_candidates
     fast = RawTreeClient(s.api_url, s.api_key, s.team, timeout=s.http_timeout_s, retries=0)
     slow = RawTreeClient(s.api_url, s.api_key, s.team, timeout=60, retries=2)
 
@@ -409,8 +289,32 @@ def main(argv: list[str] | None = None) -> None:
     watcher = ModelWatcher(args.model_dir, s.every_model_check).start()
     rec = Recommender(state, watcher.scorer, n_candidates=s.n_candidates, n_items=s.n_items,
                       n_explore=0 if args.no_explore else s.n_explore, explore_prior=s.explore_prior,
-                      max_recent=s.max_recent, decay=s.recency_decay)
-    server = Server(fast, state, rec, watcher, s, dry_run=args.dry_run, log=ServeLog(config.LOGS))
+                      max_recent=s.max_recent, decay=s.recency_decay, max_per_sub=args.max_per_sub)
+    if args.old_candidates:
+        rec.quotas = QUOTAS_OLD
+    arms: list[Arm] = []
+    if args.ab_model_dir:
+        frac = args.ab_fraction if args.ab_fraction is not None else 1.0 / (len(args.ab_model_dir) + 1)
+        if frac * len(args.ab_model_dir) >= 1.0:
+            raise SystemExit("--ab-fraction demasiado alta: no quedaría tráfico para el modelo principal")
+        watchers: dict[str, ModelWatcher] = {}
+        for spec in args.ab_model_dir:
+            arm = parse_arm(spec, frac)
+            key = str(arm.path.resolve())
+            if key == str(args.model_dir.resolve()):
+                arm.watcher = watcher                       # mismo modelo que el principal
+            else:
+                if key not in watchers:
+                    watchers[key] = ModelWatcher(arm.path, s.every_model_check).start()
+                arm.watcher = watchers[key]
+            arms.append(arm)
+            print(f"[serve] test A/B: {frac:.0%} de las peticiones a {arm.path}{arm.suffix() or ''}")
+        print(f"[serve] el {1 - frac * len(arms):.0%} restante, al modelo principal {args.model_dir}")
+    server = Server(fast, state, rec, watcher, s, dry_run=args.dry_run, log=ServeLog(config.LOGS),
+                    arms=arms)
+    server.main_suffix = Arm(None, 0, 0 if args.no_explore else None, args.max_per_sub,
+                             args.old_candidates, adapt=args.adapt).suffix()
+    server.main_adapt = args.adapt
     try:
         server.run(args.max_seconds)
     except KeyboardInterrupt:
